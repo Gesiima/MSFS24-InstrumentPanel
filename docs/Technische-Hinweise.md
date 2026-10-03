@@ -89,3 +89,5 @@ sendet `ATTITUDE_BARS_POSITION_UP`/`DOWN`. Einige Werte (Vorzeichen des
 Nick-Winkels, Skalierung von `ATTITUDE BARS POSITION`) sind Annahmen ohne
 Testmöglichkeit meinerseits - ggf. nach erstem Test anpassen.
 
+---
+*Entstanden in Zusammenarbeit: Coding durch Claude (Anthropic), Anforderungen, Kalibrierung und Tests durch Gesiima. Lizenz: AGPL-3.0, siehe [LICENSE](../LICENSE).*

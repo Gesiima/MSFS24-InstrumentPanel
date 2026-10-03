@@ -1,3 +1,5 @@
+// MSFS24 InstrumentPanel - GNU AGPL v3 (siehe LICENSE)
+// Entstanden in Zusammenarbeit: Coding durch Claude (Anthropic), Anforderungen und Tests durch Gesiima.
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Shapes;

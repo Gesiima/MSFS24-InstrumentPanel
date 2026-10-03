@@ -13,6 +13,10 @@
     <LangVersion>latest</LangVersion>
     <!-- Versionsnummer: bei jedem Release hochzählen (SemVer) und als Git-Tag vX.Y.Z setzen. -->
     <Version>1.0.0</Version>
+    <Authors>Gesiima</Authors>
+    <Company>Gesiima</Company>
+    <Description>MSFS 2024 Instrument Panel - entstanden in Zusammenarbeit mit Claude (Anthropic)</Description>
+    <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <ApplicationIcon>icon\app.ico</ApplicationIcon>
   </PropertyGroup>
 

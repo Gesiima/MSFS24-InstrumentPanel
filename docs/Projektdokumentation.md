@@ -103,3 +103,6 @@ dotnet build -c Release
 
 - Oil Press-Kalibrierung: ein beobachteter Versatz (Rohwert 65→zeigt ~55, 78→~65) konnte mangels zuverlässiger Live-Ablesung nicht bestätigt werden – bleibt vorerst unverändert, Atmosphärendruck als Ursache wurde ausgeschlossen (würde konstanten, nicht linear wachsenden Versatz ergeben).
 - Weitere Anzeigen folgen demselben Muster: Fuel-/EGT-Template klonen → SimConnect-Variablen umstellen → Kalibrierpunkte (Wert/Winkel-Paare) ermitteln → ATAN2-Zielradius ggf. anpassen → Feinjustage von Zahlen-/Textpositionen iterativ per Screenshot-Feedback.
+
+---
+*Entstanden in Zusammenarbeit: Coding durch Claude (Anthropic), Anforderungen, Kalibrierung und Tests durch Gesiima. Lizenz: AGPL-3.0, siehe [LICENSE](../LICENSE).*

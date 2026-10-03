@@ -57,3 +57,11 @@ docs/                  Projekt- und Technikdokumentation
 
 - Versionsnummer: `<Version>` in `InstrumentPanel.csproj` (SemVer), Release = Git-Tag `vX.Y.Z`.
 - Build-Ausgaben (`bin/`, `obj/`) werden **nicht** eingecheckt, sondern als ZIP unter [Releases](https://github.com/Gesiima/MSFS24-InstrumentPanel/releases) veröffentlicht.
+
+## Mitwirkung / Attribution
+
+Dieses Projekt entsteht in Zusammenarbeit: Das **Coding übernimmt Claude (Anthropic)**, die Funktionen werden **gemeinsam erarbeitet**. Anforderungen, Designentscheidungen, die Kalibrierung der Instrumente, das Testen im Simulator sowie alle Korrekturen und Verfeinerungen stammen von **Gesiima**; Claude setzt sie iterativ in Code um. Es wurde kein Code manuell geschrieben.
+
+## Lizenz
+
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0). Die SimConnect-DLLs aus dem MSFS SDK sind nicht Teil dieses Projekts und unterliegen der Lizenz von Microsoft.
