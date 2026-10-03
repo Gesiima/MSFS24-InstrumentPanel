@@ -4,7 +4,7 @@
 
 Rahmenlose, transparente, immer-im-Vordergrund WPF-Anwendung (.NET 4.7.2 / C#) für Windows, die klassische Rundinstrumente aus Microsoft Flight Simulator 2024 per SimConnect abgreift und auf einem (meist zweiten) Monitor als Overlay anzeigt. Gedacht für Simulator-Cockpits (z. B. AirSimRig/MobiFlight-Setup), bei denen physische oder virtuelle Zusatz-Instrumente neben dem eigentlichen Sim-Fenster sinnvoll sind.
 
-**Fliegerischer Hintergrund:** Entwickelt mit Bezug auf eine FK9 Mark4 SPL (Basis der Kalibrierungen für EGT/Öldruck/-temperatur).
+**Fliegerischer Hintergrund:** Entwickelt für die Cessna 172 (Basis der Kalibrierungen der Instrumente).
 
 ## Architektur
 
