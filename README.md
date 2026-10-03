@@ -55,9 +55,16 @@ docs/                  Projekt- und Technikdokumentation
 
 ## Versionen und Releases
 
-- Versionsnummer: `<Version>` in `InstrumentPanel.csproj` (SemVer), Release = Git-Tag `vX.Y.Z`.
-- Build-Ausgaben (`bin/`, `obj/`) werden **nicht** eingecheckt, sondern als ZIP unter [Releases](https://github.com/Gesiima/MSFS24-InstrumentPanel/releases) veröffentlicht.
+Versionierung nach [SemVer](https://semver.org/lang/de/) (`MAJOR.MINOR.PATCH`). Einzige Quelle der Wahrheit ist `<Version>` in `src/InstrumentPanel/InstrumentPanel.csproj`; die Version steht im Titel des Setup-Fensters, in den Dateieigenschaften der `.exe` und im Debug-Log. Änderungen stehen im [CHANGELOG](CHANGELOG.md) (neue Einträge unter `[Unreleased]` sammeln).
 
+Release erstellen (PowerShell 7):
+
+```powershell
+./scripts/New-Release.ps1 -Bump Minor          # oder Patch (Standard) / Major, bzw. -Version 1.2.0
+./scripts/New-Release.ps1 -Bump Patch -Push    # zusätzlich pushen + GitHub-Release (falls gh installiert)
+```
+
+Das Skript erhöht die Version, schreibt den CHANGELOG fort, baut, packt `dist/InstrumentPanel-vX.Y.Z.zip`, committet und setzt das Tag `vX.Y.Z`. Build-Ausgaben (`bin/`, `obj/`, `dist/`) werden nicht eingecheckt; das ZIP kommt als Anhang unter [Releases](https://github.com/Gesiima/MSFS24-InstrumentPanel/releases). Die SimConnect-DLLs sind nicht im ZIP.
 ## Mitwirkung / Attribution
 
 Dieses Projekt entsteht in Zusammenarbeit: Das **Coding übernimmt Claude (Anthropic)**, die Funktionen werden **gemeinsam erarbeitet**. Anforderungen, Designentscheidungen, die Kalibrierung der Instrumente, das Testen im Simulator sowie alle Korrekturen und Verfeinerungen stammen von **Gesiima**; Claude setzt sie iterativ in Code um. Es wurde kein Code manuell geschrieben.

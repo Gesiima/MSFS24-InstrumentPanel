@@ -39,6 +39,7 @@ namespace InstrumentPanel
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
+            DebugLog.Write("InstrumentPanel v" + AppVersion.Current + " gestartet");
 
             // Beim Schließen des letzten Fensters soll die App enden (Standard bei
             // StartupUri), das müssen wir jetzt selbst einstellen, da wir Fenster

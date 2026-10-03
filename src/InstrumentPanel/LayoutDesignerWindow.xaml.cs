@@ -98,6 +98,7 @@ namespace InstrumentPanel
         public LayoutDesignerWindow(string layoutPath, SimConnectService service, Action onSaved = null, Action<int> onWindowDeleted = null)
         {
             InitializeComponent();
+            Title = "Setup - InstrumentPanel v" + AppVersion.Current;
             _layoutPath = layoutPath;
             _settingsPath = Path.Combine(Path.GetDirectoryName(layoutPath) ?? AppDomain.CurrentDomain.BaseDirectory, "settings.json");
             _service = service;
