@@ -1,0 +1,14 @@
+# Build-Ausgaben - nie committen, Releases laufen über GitHub Releases
+bin/
+obj/
+dist/
+.vs/
+*.user
+*.suo
+
+# Proprietäre MSFS-SDK-Dateien (Lizenz Microsoft) - lokal nach src/InstrumentPanel/lib/ kopieren
+src/InstrumentPanel/lib/*.dll
+
+# Laufzeit-Artefakte / lokale Kopien
+debug.log
+*Kopie*.json

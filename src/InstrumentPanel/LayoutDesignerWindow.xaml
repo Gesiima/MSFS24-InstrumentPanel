@@ -1,0 +1,205 @@
+<Window x:Class="InstrumentPanel.LayoutDesignerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Setup" Width="1100" Height="750"
+        Background="#1e1e1e" WindowStartupLocation="CenterScreen">
+    <TabControl Background="#1e1e1e" Margin="4">
+        <TabItem Header="Layout">
+            <Grid Margin="12">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Kurzanleitung, immer sichtbar -->
+                <Border Grid.Row="0" Background="#2a2a2e" CornerRadius="4" Padding="10,8" Margin="0,0,0,10">
+                    <StackPanel>
+                        <TextBlock Foreground="#cccccc" FontSize="11" TextWrapping="Wrap">
+                            <Run Text="So geht's: " FontWeight="Bold" Foreground="White" />
+                            <Run Text="Jede Fläche hat eine Anzeigen-Auswahl und zwei Aufteilen-Knöpfe (⬍ in Zeilen, ⬌ in Spalten). Die Vorschau zeigt dabei die echten Größenverhältnisse, und jede Anzeige zeigt ihre tatsächliche Endgröße." />
+                        </TextBlock>
+                        <TextBlock Foreground="#999999" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0">
+                            <Run Text="Beispiel: " FontWeight="Bold" />
+                            <Run Text="eine kleinere Anzeige neben normalen Spalten (z.B. 3 statt 2 gestapelte Anzeigen in einer Spalte) - erst diese eine Spalte ⬍ in 3 Zeilen teilen, dann '🔗 Breite an Zeilen koppeln' aktivieren, damit die Breite automatisch passt (und sich mit anpasst, falls du später die Zeilenanzahl änderst). Eine Aufteilung wieder aufheben: ⊟ Zusammenführen." />
+                        </TextBlock>
+                    </StackPanel>
+                </Border>
+
+                <!-- Kopfzeile: Fenster-Übersicht als Buttons statt Zahlen-Eingabe -->
+                <StackPanel Grid.Row="1" Margin="0,0,0,10">
+                    <TextBlock Text="Fenster:" Foreground="White" Margin="0,0,0,4" />
+                    <WrapPanel x:Name="WindowButtonsPanel" Margin="0,0,0,6" />
+                    <StackPanel Orientation="Horizontal">
+                        <Button x:Name="ResetButton" Content="Aktuelles Fenster leeren" Padding="8,3" Margin="0,0,8,0" Click="ResetButton_Click" />
+                        <Button x:Name="DeleteWindowButton" Content="Aktuelles Fenster löschen" Padding="8,3" Click="DeleteWindowButton_Click"
+                                ToolTip="Entfernt das gerade ausgewählte Fenster komplett aus layout.json und schließt es sofort, falls es gerade offen ist." />
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Hauptbereich: die Vorschau/Bearbeitungsfläche - scrollbar, damit
+                     auch tief verschachtelte/breite Layouts nie abgeschnitten werden -->
+                <Border Grid.Row="2" BorderBrush="#444" BorderThickness="1" Background="#141414">
+                    <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                        <Grid x:Name="SlotsGrid" Margin="6" MinWidth="900" MinHeight="450" />
+                    </ScrollViewer>
+                </Border>
+
+                <!-- Fußzeile: Speichern -->
+                <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,10,0,0">
+                    <Button x:Name="SaveButton" Content="layout.json speichern" Padding="12,5" FontWeight="Bold" Click="SaveButton_Click" />
+                    <TextBlock x:Name="StatusText" Foreground="LightGreen" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
+                </StackPanel>
+            </Grid>
+        </TabItem>
+
+        <TabItem Header="Einstellungen">
+            <StackPanel Margin="20">
+                <TextBlock Text="Allgemeine Einstellungen (settings.json)" Foreground="White" FontSize="14" FontWeight="Bold" Margin="0,0,0,16" />
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Aktualisierungsrate (ms)" Foreground="White" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" x:Name="RefreshIntervalBox" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="wie oft neue Werte von MSFS angefragt werden" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" />
+                </Grid>
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Anzeigen-Basisgröße (px)" Foreground="White" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" x:Name="GaugeCellSizeBox" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="Startgröße je voller Anzeige beim Programmstart" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" />
+                </Grid>
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Debug-Logging" Foreground="White" VerticalAlignment="Center" />
+                    <CheckBox Grid.Column="1" x:Name="DebugLoggingCheckBox" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="schreibt debug.log - nur bei Fehlersuche aktivieren" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Turn Coordinator" Foreground="White" FontSize="14" FontWeight="Bold" Margin="0,20,0,16" />
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Ball-Teiler" Foreground="White" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" x:Name="BallDivisorBox" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="Standard 1.0 - nur bei falscher Ball-Ausschlag-Stärke ändern" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" />
+                </Grid>
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Vakuum-Schwellwert (inHg)" Foreground="White" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" x:Name="VacuumThresholdBox" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="ab diesem Wert gilt der Kreisel als &quot;läuft&quot;" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Oil Press" Foreground="White" FontSize="14" FontWeight="Bold" Margin="0,20,0,16" />
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Atmosphären-Offset (PSI)" Foreground="White" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" x:Name="OilPressOffsetBox" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="wird vom Rohwert abgezogen (Standard 14,5 = 1 bar)" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="EGT" Foreground="White" FontSize="14" FontWeight="Bold" Margin="0,20,0,16" />
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Skalen-Minimum (°F)" Foreground="White" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" x:Name="EgtMinFBox" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="unterer Skalenrand - je nach Flugzeug/Triebwerk unterschiedlich" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" />
+                </Grid>
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Skalen-Maximum (°F)" Foreground="White" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" x:Name="EgtMaxFBox" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="oberer Skalenrand ('E') - je nach Flugzeug/Triebwerk unterschiedlich" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Fenster-Hintergrund" Foreground="White" FontSize="14" FontWeight="Bold" Margin="0,20,0,16" />
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Muster" Foreground="White" VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="1" x:Name="WindowBackgroundModeBox" VerticalAlignment="Center"
+                              SelectionChanged="WindowBackgroundModeBox_SelectionChanged" />
+                    <TextBlock Grid.Column="2" Text="&quot;Kein Hintergrund&quot; = wie bisher (Anzeigen schweben transparent über Desktop/Sim)" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" TextWrapping="Wrap" />
+                </Grid>
+
+                <Grid Margin="0,0,0,8" x:Name="CustomImageRow" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Eigenes Bild" Foreground="White" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" x:Name="CustomImagePathBox" IsReadOnly="True" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <Button Grid.Column="2" x:Name="BrowseImageButton" Content="Durchsuchen..." Padding="8,3" Click="BrowseImageButton_Click" />
+                </Grid>
+
+                <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
+                    <Button x:Name="SaveSettingsButton" Content="settings.json speichern" Padding="10,4" Click="SaveSettingsButton_Click" />
+                    <TextBlock x:Name="SettingsStatusText" Foreground="LightGreen" VerticalAlignment="Center" Margin="12,0,0,0" />
+                </StackPanel>
+            </StackPanel>
+        </TabItem>
+        <TabItem Header="Debug-Werte">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Text="Alle von MSFS angefragten Variablen mit ihrem zuletzt empfangenen Wert (aktualisiert live, ca. 1x/Sekunde)."
+                           Foreground="#aaaaaa" FontSize="11" Margin="0,0,0,8" />
+                <ListView Grid.Row="1" x:Name="DebugValuesList" Background="#2a2a2a" Foreground="White" BorderThickness="0">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Variable" Width="500" DisplayMemberBinding="{Binding Name}" />
+                            <GridViewColumn Header="Wert" Width="200" DisplayMemberBinding="{Binding Value}" />
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Grid>
+        </TabItem>
+    </TabControl>
+</Window>

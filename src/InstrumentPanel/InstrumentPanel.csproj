@@ -1,0 +1,81 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- CTrue/Microsoft.FlightSimulator.SimConnect.dll ist eine .NET-Framework-Assembly,
+         daher net472 statt .NET (Core). Erzeugt beim Build direkt eine .exe. -->
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net472</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>disable</Nullable>
+    <AssemblyName>InstrumentPanel</AssemblyName>
+    <RootNamespace>InstrumentPanel</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <!-- Versionsnummer: bei jedem Release hochzählen (SemVer) und als Git-Tag vX.Y.Z setzen. -->
+    <Version>1.0.0</Version>
+    <ApplicationIcon>icon\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Anwendungs-/Taskleisten-Icon. ApplicationIcon setzt das Icon der .exe-Datei
+         selbst (Explorer); als Resource eingebunden, damit auch Window.Icon (Taskleiste,
+         Alt-Tab während die App läuft) es referenzieren kann. -->
+    <Resource Include="icon\app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Managed SimConnect-Wrapper aus dem MSFS SDK.
+         Datei siehe README: "Microsoft.FlightSimulator.SimConnect.dll" nach lib\ kopieren. -->
+    <Reference Include="Microsoft.FlightSimulator.SimConnect">
+      <HintPath>lib\Microsoft.FlightSimulator.SimConnect.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <!-- Für das einfache Einlesen von layout.json (JavaScriptSerializer).
+         System.Web muss explizit mit dazu, da System.Web.Extensions das intern
+         braucht - der WPF-XAML-Compiler löst das sonst nicht automatisch auf. -->
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Web" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Layout-Konfiguration: legt fest, welche Anzeigen in welcher Reihenfolge/
+         welchen Zeilen erscheinen. Muss neben der .exe liegen, damit sie zur
+         Laufzeit gefunden und vom Nutzer angepasst werden kann. -->
+    <None Include="layout.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="settings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Native SimConnect.dll (ebenfalls aus dem SDK) landet neben der .exe.
+         <Link> erzwingt den flachen Dateinamen im Ausgabeordner - ohne das
+         behält MSBuild sonst den "lib\"-Unterordner bei (bin\...\lib\SimConnect.dll
+         statt bin\...\SimConnect.dll), wodurch die .exe die Datei nicht findet. -->
+    <None Include="lib\SimConnect.dll" Condition="Exists('lib\SimConnect.dll')">
+      <Link>SimConnect.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- Explizit zusätzlich als Content einbinden: bei net472-SDK-Style-Projekten
+         wird "Private=true" bei <Reference> nicht immer zuverlässig kopiert. -->
+    <None Include="lib\Microsoft.FlightSimulator.SimConnect.dll" Condition="Exists('lib\Microsoft.FlightSimulator.SimConnect.dll')">
+      <Link>Microsoft.FlightSimulator.SimConnect.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Zusätzliches Sicherheitsnetz: expliziter Kopierschritt nach jedem Build.
+       Falls die CopyToOutputDirectory-Metadaten oben in einer Umgebung nicht
+       zuverlässig greifen, kopiert dieser Target-Schritt trotzdem verlässlich. -->
+  <Target Name="CopySimConnectDlls" AfterTargets="Build">
+    <ItemGroup>
+      <SimConnectDlls Include="lib\SimConnect.dll;lib\Microsoft.FlightSimulator.SimConnect.dll"
+                       Condition="Exists('lib\SimConnect.dll') And Exists('lib\Microsoft.FlightSimulator.SimConnect.dll')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(SimConnectDlls)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="false"
+          Condition="'@(SimConnectDlls)' != ''" />
+  </Target>
+
+</Project>
