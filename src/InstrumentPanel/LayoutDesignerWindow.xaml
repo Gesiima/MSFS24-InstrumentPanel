@@ -4,7 +4,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Setup" Width="1100" Height="750"
         Background="#1e1e1e" WindowStartupLocation="CenterScreen">
-    <TabControl Background="#1e1e1e" Margin="4">
+    <TabControl x:Name="MainTabs" Background="#1e1e1e" Margin="4">
         <TabItem Header="Layout">
             <Grid Margin="12">
                 <Grid.RowDefinitions>
@@ -56,6 +56,7 @@
         </TabItem>
 
         <TabItem Header="Einstellungen">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Margin="20">
                 <TextBlock Text="Allgemeine Einstellungen (settings.json)" Foreground="White" FontSize="14" FontWeight="Bold" Margin="0,0,0,16" />
 
@@ -114,6 +115,19 @@
                     <TextBlock Grid.Column="0" Text="Vakuum-Schwellwert (inHg)" Foreground="White" VerticalAlignment="Center" />
                     <TextBox Grid.Column="1" x:Name="VacuumThresholdBox" VerticalAlignment="Center" />
                     <TextBlock Grid.Column="2" Text="ab diesem Wert gilt der Kreisel als &quot;läuft&quot;" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" />
+                </Grid>
+
+                <TextBlock Text="Künstlicher Horizont" Foreground="White" FontSize="14" FontWeight="Bold" Margin="0,20,0,16" />
+
+                <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="100" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Künstlicher Horizont: Vakuum-Schwelle (inHg)" Foreground="White" VerticalAlignment="Center" TextWrapping="Wrap" />
+                    <TextBox Grid.Column="1" x:Name="AttitudeVacuumThresholdBox" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="0 = Vakuum ignorieren, z.B. für elektrische Kreisel" Foreground="#aaaaaa" FontSize="11" VerticalAlignment="Center" Margin="10,0,0,0" />
                 </Grid>
 
                 <TextBlock Text="Oil Press" Foreground="White" FontSize="14" FontWeight="Bold" Margin="0,20,0,16" />
@@ -183,8 +197,9 @@
                     <TextBlock x:Name="SettingsStatusText" Foreground="LightGreen" VerticalAlignment="Center" Margin="12,0,0,0" />
                 </StackPanel>
             </StackPanel>
+            </ScrollViewer>
         </TabItem>
-        <TabItem Header="Debug-Werte">
+        <TabItem x:Name="DebugTab" Header="Debug-Werte">
             <Grid Margin="10">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />

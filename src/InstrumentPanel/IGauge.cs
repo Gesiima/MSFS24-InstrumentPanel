@@ -1,7 +1,5 @@
 // MSFS24 InstrumentPanel - GNU AGPL v3 (siehe LICENSE)
 // Entstanden in Zusammenarbeit: Coding durch Claude (Anthropic), Anforderungen und Tests durch Gesiima.
-using System.Windows.Media;
-
 namespace InstrumentPanel
 {
     /// <summary>
@@ -17,11 +15,5 @@ namespace InstrumentPanel
         /// Hier registriert die Anzeige ihre benötigten SimConnect-Variablen.
         /// </summary>
         void Initialize(SimConnectService service);
-
-        /// <summary>
-        /// Wird bei jeder Änderung des Verbindungsstatus aufgerufen
-        /// (z.B. "Verbinde...", "Verbunden", "Warte auf MSFS...").
-        /// </summary>
-        void UpdateStatus(string text, Brush color);
     }
 }

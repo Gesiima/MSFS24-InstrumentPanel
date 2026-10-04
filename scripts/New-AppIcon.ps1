@@ -8,8 +8,10 @@
     kleinen Größen (16/24/32 px) lesbar, statt eine große Grafik herunterzuskalieren.
     Enthaltene Größen: 16, 24, 32, 48, 64, 128, 256 px (256 px als PNG, kleinere als klassische BMP-Ebenen im ICO-Container).
     Zusätzlich wird icon/app_256.png als Vorschau geschrieben.
+    Hinweis: Das Skript nutzt System.Drawing und läuft deshalb nur unter Windows.
 .PARAMETER OutputDirectory
-    Zielordner (Standard: src/InstrumentPanel/icon).
+    Zielordner (Standard: src/InstrumentPanel/icon). Relative Pfade werden gegen das aktuelle
+    Arbeitsverzeichnis aufgelöst; fehlt der Ordner, wird er angelegt.
 .EXAMPLE
     ./scripts/New-AppIcon.ps1 -Verbose
 #>
@@ -19,14 +21,20 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# System.Drawing (GDI+) steht nur unter Windows zur Verfügung
+if (-not $IsWindows) { throw 'New-AppIcon.ps1 läuft nur unter Windows (System.Drawing).' }
 Add-Type -AssemblyName System.Drawing
 
-# Zeichnet das Icon in der gewünschten Kantenlänge und liefert die PNG-Bytes
+# Zeichnet das Icon in der gewünschten Kantenlänge und liefert das Bitmap (Aufrufer gibt es frei)
 function New-IconPng {
     param([int]$Size)
 
     $bitmap = [System.Drawing.Bitmap]::new($Size, $Size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    # Vorab auf $null, damit das finally nur Objekte freigibt, die auch erzeugt wurden
+    $bezelOuter = $null; $bezelInner = $null; $face = $null
+    $tickPen = $null; $needlePen = $null; $hub = $null
     try {
         $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
         $graphics.Clear([System.Drawing.Color]::Transparent)
@@ -70,7 +78,9 @@ function New-IconPng {
         $graphics.FillEllipse($hub, $center - $hubRadius, $center - $hubRadius, 2 * $hubRadius, 2 * $hubRadius)
     }
     finally {
-        $graphics.Dispose()
+        foreach ($disposable in $bezelOuter, $bezelInner, $face, $tickPen, $needlePen, $hub, $graphics) {
+            if ($disposable) { $disposable.Dispose() }
+        }
     }
 
     return $bitmap
@@ -91,9 +101,13 @@ function ConvertTo-IconDibBytes {
     $size = $Bitmap.Width
     $rect = [System.Drawing.Rectangle]::new(0, 0, $size, $size)
     $data = $Bitmap.LockBits($rect, [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    $pixels = [byte[]]::new($data.Stride * $size)
-    [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $pixels, 0, $pixels.Length)
-    $Bitmap.UnlockBits($data)
+    try {
+        $pixels = [byte[]]::new($data.Stride * $size)
+        [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $pixels, 0, $pixels.Length)
+    }
+    finally {
+        $Bitmap.UnlockBits($data)
+    }
 
     $maskRowBytes = [int]([Math]::Ceiling($size / 32.0) * 4)
     $stream = [System.IO.MemoryStream]::new()
@@ -112,18 +126,29 @@ function ConvertTo-IconDibBytes {
 }
 
 try {
+    # Relativen Zielordner gegen das aktuelle Arbeitsverzeichnis auflösen (.NET kennt das PowerShell-Verzeichnis nicht)
+    $OutputDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
+    if (-not (Test-Path -LiteralPath $OutputDirectory)) {
+        Write-Verbose "Lege Zielordner an: $OutputDirectory"
+        New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    }
+
     $sizes = 16, 24, 32, 48, 64, 128, 256
     $imageBySize = @{}   # Hashtable (kein [ordered]: dort würde ein int-Schlüssel als Position gelesen)
     foreach ($size in $sizes) {
         Write-Verbose "Zeichne ${size}x${size}"
         $bitmap = New-IconPng -Size $size
-        # 256 px als PNG (Windows-Standard), alle kleineren als DIB
-        $imageBySize[$size] = if ($size -ge 256) { ConvertTo-PngBytes -Bitmap $bitmap } else { ConvertTo-IconDibBytes -Bitmap $bitmap }
-        if ($size -eq 256) { $previewPng = ConvertTo-PngBytes -Bitmap $bitmap }
-        $bitmap.Dispose()
+        try {
+            # Nur die 256-px-Ebene als PNG (Windows-Standard), alle kleineren als DIB
+            $imageBySize[$size] = if ($size -ge 256) { ConvertTo-PngBytes -Bitmap $bitmap } else { ConvertTo-IconDibBytes -Bitmap $bitmap }
+            if ($size -eq 256) { $previewPng = ConvertTo-PngBytes -Bitmap $bitmap }
+        }
+        finally {
+            $bitmap.Dispose()
+        }
     }
 
-    # ICO-Container: Header (6 Byte) + je Bild ein Verzeichniseintrag (16 Byte) + PNG-Daten
+    # ICO-Container: Header (6 Byte) + je Bild ein Verzeichniseintrag (16 Byte) + Bilddaten (256 px PNG, kleinere DIB)
     $stream = [System.IO.MemoryStream]::new()
     $writer = [System.IO.BinaryWriter]::new($stream)
     $writer.Write([uint16]0); $writer.Write([uint16]1); $writer.Write([uint16]$sizes.Count)
@@ -144,6 +169,10 @@ try {
     Write-Verbose "Icon geschrieben nach $OutputDirectory"
 }
 catch {
-    Write-Error "Icon-Erzeugung fehlgeschlagen: $($_.Exception.Message)"
-    exit 1
+    # Beendet das Skript mit Exitcode ungleich 0 (statt Write-Error + totem "exit 1")
+    $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
+        [System.Exception]::new("Icon-Erzeugung fehlgeschlagen: $($_.Exception.Message)"),
+        'IconCreationFailed',
+        [System.Management.Automation.ErrorCategory]::OperationStopped,
+        $null))
 }

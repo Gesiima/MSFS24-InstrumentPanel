@@ -21,6 +21,15 @@ namespace InstrumentPanel
         private readonly SimConnectService _service;
         private Dictionary<string, object> _layoutData;
 
+        // Registrierungen der Anzeigen dieses Fensters; werden beim Neuaufbau und beim
+        // Schließen wieder abgemeldet, damit keine Anzeigen von gelöschten Gauges
+        // weiter von SimConnect beliefert werden.
+        private RegistrationGroup _registrationGroup;
+
+        // Die Startgröße wird nur beim ersten Aufbau gesetzt - ein späteres Neuladen
+        // des Layouts soll manuell veränderte Fenstergrößen nicht überschreiben.
+        private bool _startSizeApplied;
+
         /// <summary>
         /// windowLayout ist das Layout-Datenobjekt NUR für dieses eine Fenster
         /// (siehe App.xaml.cs: LoadWindowLayouts) - bei mehreren Fenstern
@@ -45,7 +54,32 @@ namespace InstrumentPanel
             WindowBackgroundLayer.Fill = WindowBackgroundBrushes.Create(
                 AppSettings.WindowBackgroundMode, AppSettings.WindowBackgroundImagePath);
 
+            // Zuletzt gemeldeten Verbindungsstatus sofort anzeigen (ein neu erzeugtes
+            // Fenster bekäme sonst bis zur nächsten Statusänderung nur "Verbinde...").
+            if (_service != null && _service.TryGetLastStatus(out var statusText, out var statusColor))
+                SetStatus(statusText, statusColor);
+
             BuildLayout();
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            // Anzeigen dieses Fensters bei SimConnect abmelden.
+            _registrationGroup?.Dispose();
+            _registrationGroup = null;
+            base.OnClosed(e);
+        }
+
+        /// <summary>Setzt die Fenstergröße nur beim allerersten Aufbau (siehe _startSizeApplied).</summary>
+        private void ApplyStartSize(double width, double height)
+        {
+            if (_startSizeApplied) return;
+            if (double.IsNaN(width) || double.IsInfinity(width) || width <= 0) return;
+            if (double.IsNaN(height) || double.IsInfinity(height) || height <= 0) return;
+
+            Width = width;
+            Height = height;
+            _startSizeApplied = true;
         }
 
         /// <summary>
@@ -70,11 +104,6 @@ namespace InstrumentPanel
             BuildLayout();
         }
 
-        /// <summary>
-        /// Liest layout.json (Zeilen von Anzeigen-Namen) und baut das Raster auf.
-        /// Fehlt die Datei oder ist sie ungültig, wird als Fallback nur die
-        /// Airspeed-Anzeige alleine angezeigt.
-        /// </summary>
         // Größenverhältnis pro Anzeigen-Name (1.0 = normale Größe). Neue kleinere
         // Anzeigen hier eintragen - Zeilen-/Spaltenhöhe im Raster richten sich
         // automatisch danach (z.B. 3 Anzeigen mit Faktor 2/3 nehmen zusammen genau
@@ -88,7 +117,28 @@ namespace InstrumentPanel
         private static double GetGaugeScale(string name) =>
             GaugeScales.TryGetValue(name?.Trim() ?? "", out double scale) ? scale : 1.0;
 
+        /// <summary>
+        /// Liest das Layout dieses Fensters (neues "cells"-Schema, sonst das ältere
+        /// "rows"-Schema) und baut das Raster auf. Meldet vorher die Anzeigen des
+        /// alten Aufbaus bei SimConnect ab und fasst die neu erzeugten in einer
+        /// frischen Registrierungs-Gruppe zusammen. Fehlt die Datei oder ist sie
+        /// ungültig, wird als Fallback nur die Airspeed-Anzeige alleine angezeigt.
+        /// </summary>
         private void BuildLayout()
+        {
+            _registrationGroup?.Dispose();
+            _registrationGroup = _service.BeginRegistrationGroup();
+            try
+            {
+                BuildLayoutCore();
+            }
+            finally
+            {
+                _registrationGroup.EndCapture();
+            }
+        }
+
+        private void BuildLayoutCore()
         {
             List<CellDef> cells = null;
             try
@@ -102,8 +152,22 @@ namespace InstrumentPanel
 
             if (cells != null)
             {
-                BuildLayoutFromCells(cells);
-                return;
+                try
+                {
+                    BuildLayoutFromCells(cells);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    // Lieber das einfache Fallback-Layout als ein Fenster, das gar nicht startet.
+                    DebugLog.Write("BuildLayout: Exception beim Aufbau aus 'cells' - " + ex);
+
+                    // Bereits angemeldete Gauges des abgebrochenen Aufbaus abmelden (sie werden
+                    // gleich aus dem Grid entfernt) und für das Fallback-Layout neu beginnen.
+                    _registrationGroup.EndCapture();
+                    _registrationGroup.Dispose();
+                    _registrationGroup = _service.BeginRegistrationGroup();
+                }
             }
 
             List<List<string>> rows;
@@ -185,8 +249,7 @@ namespace InstrumentPanel
             // Summe der Skalierungsfaktoren ersetzt die frühere reine Spalten-/
             // Zeilenanzahl, damit kleinere Anzeigen auch weniger Platz beanspruchen.
             double cellSize = AppSettings.GaugeCellSize;
-            Width = colScales.Sum() * cellSize;
-            Height = rowScales.Sum() * cellSize;
+            ApplyStartSize(colScales.Sum() * cellSize, rowScales.Sum() * cellSize);
 
             for (int r = 0; r < rows.Count; r++)
             {
@@ -243,18 +306,53 @@ namespace InstrumentPanel
         {
             if (!_layoutData.TryGetValue("cells", out var cellsObj)) return null;
 
-            var result = new List<CellDef>();
-            foreach (Dictionary<string, object> cellObj in (ArrayList)cellsObj)
+            if (!(cellsObj is ArrayList cellsList))
             {
-                var cell = new CellDef
+                DebugLog.Write("LoadCells: 'cells' ist keine Liste - Fallback auf 'rows'");
+                return null;
+            }
+
+            var result = new List<CellDef>();
+            int position = 0;
+            foreach (var item in cellsList)
+            {
+                int currentPosition = position++;
+                try
                 {
-                    Name = Convert.ToString(cellObj["name"]),
-                    Row = Convert.ToInt32(cellObj["row"]),
-                    Col = Convert.ToInt32(cellObj["col"])
-                };
-                if (cellObj.TryGetValue("rowSpan", out var rowSpanObj)) cell.RowSpan = Convert.ToInt32(rowSpanObj);
-                if (cellObj.TryGetValue("colSpan", out var colSpanObj)) cell.ColSpan = Convert.ToInt32(colSpanObj);
-                result.Add(cell);
+                    // Eine defekte Zelle (kein Objekt, name/row/col fehlt oder keine Zahl)
+                    // wird übersprungen, statt das ganze Layout zu verwerfen.
+                    var cellObj = item as Dictionary<string, object>;
+                    if (cellObj == null
+                        || !cellObj.TryGetValue("name", out var nameObj) || nameObj == null
+                        || !cellObj.TryGetValue("row", out var rowObj)
+                        || !cellObj.TryGetValue("col", out var colObj))
+                    {
+                        DebugLog.Write("LoadCells: Zelle " + currentPosition + " unvollständig - übersprungen");
+                        continue;
+                    }
+
+                    var cell = new CellDef
+                    {
+                        Name = Convert.ToString(nameObj),
+                        Row = Convert.ToInt32(rowObj),
+                        Col = Convert.ToInt32(colObj)
+                    };
+                    if (cellObj.TryGetValue("rowSpan", out var rowSpanObj)) cell.RowSpan = Convert.ToInt32(rowSpanObj);
+                    if (cellObj.TryGetValue("colSpan", out var colSpanObj)) cell.ColSpan = Convert.ToInt32(colSpanObj);
+
+                    if (cell.Row < 0 || cell.Col < 0)
+                    {
+                        DebugLog.Write("LoadCells: Zelle " + currentPosition + " ('" + cell.Name + "') hat negative Position - übersprungen");
+                        continue;
+                    }
+                    if (cell.RowSpan < 1) cell.RowSpan = 1;
+                    if (cell.ColSpan < 1) cell.ColSpan = 1;
+                    result.Add(cell);
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Write("LoadCells: Zelle " + currentPosition + " ungültig - übersprungen (" + ex.Message + ")");
+                }
             }
             return result;
         }
@@ -280,13 +378,17 @@ namespace InstrumentPanel
                 colCount = cells.Count == 0 ? 1 : cells.Max(c => c.Col + c.ColSpan);
             double[] colScales = LoadScaleArray("columnScales");
 
+            // Breite je Spalte: fehlende oder ungültige Einträge in "columnScales"
+            // (Array kürzer als die Spaltenzahl) zählen als 1.0 - gilt einheitlich für
+            // die Spaltendefinitionen und die Summe für die Fensterbreite.
+            var colWidths = new double[colCount];
+            for (int c = 0; c < colCount; c++)
+                colWidths[c] = colScales != null && c < colScales.Length && colScales[c] > 0 ? colScales[c] : 1.0;
+
             for (int i = 0; i < rowUnits; i++)
                 GaugesGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             for (int c = 0; c < colCount; c++)
-            {
-                double width = colScales != null && c < colScales.Length && colScales[c] > 0 ? colScales[c] : 1.0;
-                GaugesGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(width, GridUnitType.Star) });
-            }
+                GaugesGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(colWidths[c], GridUnitType.Star) });
 
             // Startgröße: eine Raster-Zeile entspricht (1/rowUnits) einer normalen
             // vollen Zeile - Gesamthöhe also rowUnits/größteVollzeilen-Anzahl. Da
@@ -294,22 +396,27 @@ namespace InstrumentPanel
             // Spalte belegt, nehmen wir den größten vorkommenden RowSpan als
             // Referenz für "1.0" (eine normale Zeile).
             double cellSize = AppSettings.GaugeCellSize;
-            int maxRowSpan = cells.Count == 0 ? 1 : cells.Max(c => c.RowSpan);
-            int maxColSpan = cells.Count == 0 ? 1 : cells.Max(c => c.ColSpan);
-            double colScaleSum = (colScales != null ? colScales.Take(colCount).Select((s, i) => s > 0 ? s : 1.0).Sum() : colCount);
-            Width = (colScaleSum / maxColSpan) * cellSize;
-            Height = ((double)rowUnits / maxRowSpan) * cellSize;
+            int maxRowSpan = Math.Max(1, cells.Count == 0 ? 1 : cells.Max(c => c.RowSpan));
+            int maxColSpan = Math.Max(1, cells.Count == 0 ? 1 : cells.Max(c => c.ColSpan));
+            ApplyStartSize((colWidths.Sum() / maxColSpan) * cellSize, ((double)rowUnits / maxRowSpan) * cellSize);
 
             foreach (var cell in cells)
             {
+                // Position und Ausdehnung ins Raster klemmen (z.B. wenn "rowUnits"/"colUnits"
+                // kleiner als eine Zelle ist).
+                int row = Math.Min(cell.Row, rowUnits - 1);
+                int col = Math.Min(cell.Col, colCount - 1);
+                int rowSpan = Math.Max(1, Math.Min(cell.RowSpan, rowUnits - row));
+                int colSpan = Math.Max(1, Math.Min(cell.ColSpan, colCount - col));
+
                 var control = CreateGauge(cell.Name);
                 if (control == null) continue;
 
                 var element = (UIElement)control;
-                Grid.SetRow(element, cell.Row);
-                Grid.SetColumn(element, cell.Col);
-                Grid.SetRowSpan(element, cell.RowSpan);
-                Grid.SetColumnSpan(element, cell.ColSpan);
+                Grid.SetRow(element, row);
+                Grid.SetColumn(element, col);
+                Grid.SetRowSpan(element, rowSpan);
+                Grid.SetColumnSpan(element, colSpan);
                 GaugesGrid.Children.Add(element);
 
                 control.Initialize(_service);
@@ -324,7 +431,15 @@ namespace InstrumentPanel
         private int LoadIntSetting(string key, int defaultValue)
         {
             if (!_layoutData.TryGetValue(key, out var valueObj)) return defaultValue;
-            return Convert.ToInt32(valueObj);
+            try
+            {
+                return Convert.ToInt32(valueObj);
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Write("LoadIntSetting: '" + key + "' ungültig - Standard " + defaultValue + " (" + ex.Message + ")");
+                return defaultValue;
+            }
         }
 
         /// <summary>
@@ -338,9 +453,22 @@ namespace InstrumentPanel
         {
             if (!_layoutData.TryGetValue(key, out var scalesObj)) return null;
 
+            if (!(scalesObj is ArrayList scalesList))
+            {
+                DebugLog.Write("LoadScaleArray: '" + key + "' ist keine Liste - ignoriert");
+                return null;
+            }
+
             var list = new List<double>();
-            foreach (var value in (ArrayList)scalesObj)
-                list.Add(Convert.ToDouble(value));
+            foreach (var value in scalesList)
+            {
+                // Ungültige Einträge werden 0 (= "Standard 1.0" bei den Aufrufern).
+                double scale;
+                try { scale = Convert.ToDouble(value); }
+                catch (Exception) { scale = 0; }
+                if (double.IsNaN(scale) || double.IsInfinity(scale)) scale = 0;
+                list.Add(scale);
+            }
             return list.ToArray();
         }
 

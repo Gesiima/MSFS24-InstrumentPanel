@@ -71,6 +71,7 @@ Mehrere echte Flugzeug-Skalen sind **nicht linear** über den vollen Winkel vert
   "gaugeCellSize": 375,
   "debugLogging": false,
   "turnCoordinator": { "ballDivisor": 1.0, "vacuumThreshold": 3.0 },
+  "attitudeVacuumThreshold": 3.0,
   "oilPressAtmosphericOffsetPsi": 14.5,
   "egtMinF": 1260.33,
   "egtMaxF": 1640.33,

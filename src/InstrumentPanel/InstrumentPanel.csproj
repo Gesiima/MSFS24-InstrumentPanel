@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- CTrue/Microsoft.FlightSimulator.SimConnect.dll ist eine .NET-Framework-Assembly,
+    <!-- Microsoft.FlightSimulator.SimConnect.dll ist eine .NET-Framework-Assembly,
          daher net472 statt .NET (Core). Erzeugt beim Build direkt eine .exe. -->
     <OutputType>WinExe</OutputType>
     <TargetFramework>net472</TargetFramework>

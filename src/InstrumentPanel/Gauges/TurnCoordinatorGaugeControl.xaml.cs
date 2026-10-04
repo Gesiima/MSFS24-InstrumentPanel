@@ -19,7 +19,7 @@ namespace InstrumentPanel
         private const double BallDiameter = 40;      // Durchmesser der Kugel (auch als Referenzgröße fürs Flugzeug-Symbol genutzt)
         private const double WingspanRadius = 104;  // ~2px Luft vor der Innenkante der Markierungen (bei 106)
         private const double MarkRadius = 122;       // Radius der weißen Referenzmarkierungen, nah am Rand
-        private const double StdRateBankDeg = 30;    // Symbol-Neigung bei "standard rate turn" (3°/s) - 50% mehr als zuvor (20)
+        private const double StdRateBankDeg = 30;    // Symbol-Neigung bei "standard rate turn" (3°/s): 30°
         private const double MaxBankDeg = 55;         // maximale Symbol-Neigung (Anschlag) - +5° gegenüber MSFS-Vergleich
         private const double StdRateTurnPerSec = 3;   // "standard rate": 3°/s Kursänderung = 2-Minuten-Kurve
 
@@ -38,7 +38,7 @@ namespace InstrumentPanel
         private struct TcStruct
         {
             public double TurnRate;         // Grad/Sekunde (direkt aus SimConnect)
-            public double Ball;             // -127..127 (SimConnect-Einheit "position" für dieses SimVar)
+            public double Ball;             // Rohwert (Einheit "position"); wird per ballDivisor auf -1..1 normiert und dort geklemmt
             public double SuctionPressure;  // Vakuum-Systemdruck (inHg) - bestimmt, ob der Kreisel läuft
         }
 
@@ -65,23 +65,24 @@ namespace InstrumentPanel
                 OnData);
         }
 
-        public void UpdateStatus(string text, Brush color)
-        {
-            // Verbindungsstatus wird jetzt zentral einmal im Fenster (MainWindow)
-            // angezeigt, nicht mehr pro Anzeige - hier bewusst keine Aktion nötig.
-        }
+        private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
         private void OnData(TcStruct data)
         {
+            // NaN/Infinity verwerfen - sonst würde der Tiefpass (_smoothedRate)
+            // dauerhaft NaN und die Anzeige bliebe tot.
+            if (!IsFinite(data.TurnRate) || !IsFinite(data.Ball) || !IsFinite(data.SuctionPressure)) return;
+
             // Leichte Glättung (Tiefpass), damit die Anzeige nicht flattert.
             _smoothedRate += (data.TurnRate - _smoothedRate) * 0.3;
 
             // Konfigurierbar über settings.json ("turnCoordinator": { "ballDivisor": ... }).
             // Kleinerer Wert = empfindlicher. Bei Bedarf dort anpassen, ohne den Code
-            // ändern zu müssen.
+            // ändern zu müssen. Konfig-Schutz: 0/NaN/Infinity -> 1,0.
             double ballScale = AppSettings.TurnCoordinatorBallDivisor;
+            if (!IsFinite(ballScale) || ballScale == 0) ballScale = 1.0;
             double normalizedBall = data.Ball / ballScale;
-            DebugLog.Write("[TC] OnData: raw Ball=" + data.Ball + ", ballScale=" + ballScale +
+            DebugLog.Write(() => "[TC] OnData: raw Ball=" + data.Ball + ", ballScale=" + ballScale +
                 ", normalized=" + normalizedBall + ", BallMaxOffset=" + BallMaxOffset +
                 ", SuctionPressure=" + data.SuctionPressure);
             UpdateDisplay(_smoothedRate, normalizedBall, data.SuctionPressure);
@@ -116,8 +117,8 @@ namespace InstrumentPanel
             double normalBankDeg = turnRateDegPerSec / StdRateTurnPerSec * StdRateBankDeg;
             normalBankDeg = Math.Max(-MaxBankDeg, Math.Min(MaxBankDeg, normalBankDeg));
 
-            // Ruhelage bei komplett ausgelaufenem Kreisel: voller Ausschlag nach links, 15° mehr
-            // als der normale Anschlag - Übergang dahin läuft weich mit gyroFactor statt schlagartig.
+            // Ruhelage bei komplett ausgelaufenem Kreisel: voller Ausschlag nach links (OffRestBankDeg = 60°,
+            // also 5° mehr als der normale Anschlag MaxBankDeg = 55°) - Übergang dahin läuft weich mit gyroFactor statt schlagartig.
             double bankDeg = gyroFactor * normalBankDeg + (1 - gyroFactor) * (-OffRestBankDeg);
 
             if (_planeRotation != null)
@@ -180,12 +181,12 @@ namespace InstrumentPanel
             Canvas.SetTop(face, 18);
             GaugeCanvas.Children.Add(face);
 
-            // Weiße Referenzmarkierungen für die Standardkurve (±20°), nah am Rand
+            // Weiße Referenzmarkierungen für die Standardkurve (Symbol-Neigung ±StdRateBankDeg = 30°), nah am Rand
             // Obere Markierung: waagrecht, entspricht "Flügel level"
             DrawFixedBar(-1, Brushes.White);
             DrawFixedBar(1, Brushes.White);
 
-            // Untere Markierung: Standardkurve (3°/s = 20° Symbol-Neigung),
+            // Untere Markierung: Standardkurve (3°/s = StdRateBankDeg = 30° Symbol-Neigung),
             // rechts = Referenz für Rechtskurve, links = Referenz für Linkskurve
             DrawDoghouseMark(StdRateBankDeg, Brushes.White);
 

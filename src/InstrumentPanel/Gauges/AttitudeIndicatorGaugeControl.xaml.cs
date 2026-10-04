@@ -55,6 +55,7 @@ namespace InstrumentPanel
         private bool _dragging;
         private double _dragStartX;
         private double _dragAccumulated;
+        private int _wheelAccumulated; // aufsummiertes Mausrad-Delta (120 = ein Rastschritt)
 
         public AttitudeIndicatorGaugeControl()
         {
@@ -76,19 +77,23 @@ namespace InstrumentPanel
                 OnData);
         }
 
-        public void UpdateStatus(string text, Brush color)
-        {
-            // Verbindungsstatus wird zentral im Fenster (MainWindow) angezeigt.
-        }
-
         private void OnData(AttitudeStruct data)
         {
+            // NaN/Infinity nie an die Transformationen weiterreichen - Update überspringen.
+            if (double.IsNaN(data.Pitch) || double.IsInfinity(data.Pitch)
+                || double.IsNaN(data.Bank) || double.IsInfinity(data.Bank)
+                || double.IsNaN(data.BarsPosition) || double.IsInfinity(data.BarsPosition)
+                || double.IsNaN(data.SuctionPressure) || double.IsInfinity(data.SuctionPressure))
+                return;
+
             // MSFS liefert PLANE PITCH DEGREES mit umgekehrtem Vorzeichen (negativ =
             // Nase hoch) - hier auf "positiv = Nase hoch" gedreht.
             double realPitch = -data.Pitch;
             double realBank = data.Bank;
 
-            bool switchOn = data.SuctionPressure >= AppSettings.TurnCoordinatorVacuumThreshold;
+            // Schwelle <= 0: Vakuum-Logik aus, der Kreisel gilt immer als an.
+            double vacuumThreshold = AppSettings.AttitudeVacuumThreshold;
+            bool switchOn = vacuumThreshold <= 0 || data.SuctionPressure >= vacuumThreshold;
 
             // Verstrichene Zeit seit dem letzten Update - für zeitbasierte (statt
             // update-zahl-basierte) Animationen, unabhängig vom Refresh-Intervall.
@@ -104,7 +109,7 @@ namespace InstrumentPanel
             }
 
             // Bei Unterdruck-Ausfall (Motor aus): Anzeige "kippt" langsam (über ca.
-            // 10 Sekunden) zu einer festen Fehlstellung (20° Rollen rechts, 20°
+            // 10 Sekunden) zu einer festen Fehlstellung (25° Rollen rechts, 20°
             // Pitch) statt die reale Fluglage zu zeigen - wie beim echten Kreisel,
             // der beim Ausfall allmählich zur Seite wegkippt statt sofort zu springen.
             const double failedTargetPitch = 20;
@@ -159,12 +164,12 @@ namespace InstrumentPanel
                 // Anschlag oben/unten identisch bei 78°.
                 double clampedPitch = Math.Max(-78, Math.Min(78, pitch)); // Endanschlag
                 _discTranslate.Y = clampedPitch * PixelsPerDegreePitch;
-                DebugLog.Write("[ATTITUDE] pitch=" + pitch + ", discTranslate.Y=" + _discTranslate.Y);
+                DebugLog.Write(() => "[ATTITUDE] pitch=" + pitch + ", discTranslate.Y=" + _discTranslate.Y);
             }
             if (_ringRotate != null)
             {
                 _ringRotate.Angle = bank;
-                DebugLog.Write("[ATTITUDE] bank=" + bank + ", ringRotate.Angle=" + _ringRotate.Angle);
+                DebugLog.Write(() => "[ATTITUDE] bank=" + bank + ", ringRotate.Angle=" + _ringRotate.Angle);
             }
             if (_discRotate != null)
                 _discRotate.Angle = bank;
@@ -193,16 +198,16 @@ namespace InstrumentPanel
                 _gyroFlagRotate.Angle = _displayedGyroFlagAngle;
             }
 
-            // Skalierung geschätzt (Einheit "Percent Over 100" nicht sicher spezifiziert) -
-            // ggf. nach Test anpassen.
+            // Nick-Trimm-Stellung (ATTITUDE BARS POSITION): realer Wertebereich laut Log
+            // -1 bis +1 (nicht ±100). Skalierung im Simulator als unauffällig bestätigt:
+            // Faktor 40 aufwärts (+1 -> Y=-40), Faktor 28 abwärts (-1 -> Y=+28).
+            // Pitch-Richtung ist bestätigt korrekt.
             if (_aircraftGroupTranslate != null)
             {
-                // Realer Wertebereich laut Log: -1 bis +1 (nicht ±100 wie angenommen).
-                // +1 -> +10°-Strich (Y=-40), -1 -> -5°-Strich (Y=+20).
-                // -1 -> -7°-Strich (Y=+28, statt vorher -5°/+20).
-                double barsFactor = data.BarsPosition >= 0 ? 40 : 28;
-                _aircraftGroupTranslate.Y = -data.BarsPosition * barsFactor;
-                DebugLog.Write("[ATTITUDE] barsPosition=" + data.BarsPosition + ", aircraftGroupTranslate.Y=" + _aircraftGroupTranslate.Y);
+                double barsPosition = Math.Max(-1, Math.Min(1, data.BarsPosition)); // auf den realen Bereich klemmen
+                double barsFactor = barsPosition >= 0 ? 40 : 28;
+                _aircraftGroupTranslate.Y = -barsPosition * barsFactor;
+                DebugLog.Write(() => "[ATTITUDE] barsPosition=" + barsPosition + ", aircraftGroupTranslate.Y=" + _aircraftGroupTranslate.Y);
             }
         }
 
@@ -425,7 +430,7 @@ namespace InstrumentPanel
                     double rad = angle * Math.PI / 180.0;
                     double dx = Math.Sin(rad), dy = -Math.Cos(rad);
                     // Radius, bei dem die Linie exakt die (jetzt größere) Ellipsen-Kante
-                    // trifft (Ellipse: Breite = OuterRadius, Höhe = 75*1.1), nicht mehr
+                    // trifft (Ellipse: Halbachsen x = OuterRadius, y = 75), nicht mehr
                     // ein fester Kreis-Radius.
                     const double ellipseRy = 75;
                     double denom = (dx / OuterRadius) * (dx / OuterRadius) + (dy / ellipseRy) * (dy / ellipseRy);
@@ -692,15 +697,15 @@ namespace InstrumentPanel
             });
 
             // -----------------------------------------------------------
-            // Drehknopf (Nick-Trimm-Einstellung): Unterkante liegt auf der
-            // AUSSENKANTE der Anzeige (150) - anders als beim Höhenmesser
-            // (dort: halbe Bezel-Höhe), dadurch weiter oben/eingerückter als
-            // in der Vorlage, wo der Knopf unten übersteht. Stil (Rändelung,
+            // Drehknopf (Nick-Trimm-Einstellung): Unterkante liegt auf dem
+            // Zifferblatt-Rand (OuterRadius = 132, Innenkante des Rahmens) - anders
+            // als beim Höhenmesser (dort: halbe Bezel-Höhe), dadurch weiter
+            // oben/eingerückter als in der Vorlage, wo der Knopf unten übersteht. Stil (Rändelung,
             // Bedienung) 1:1 vom Höhenmesser übernommen.
             // -----------------------------------------------------------
             const double knobDiameter = 48;
             const double knobRadius = knobDiameter / 2;
-            double knobDistance = (OuterRadius + 0) - knobRadius; // Unterkante des Knopfs = Innenkante des Rahmens (132) + 0 (5 weiter nach oben als +5)
+            double knobDistance = (OuterRadius + 0) - knobRadius; // Unterkante des Knopfs = Zifferblatt-Rand / Innenkante des Rahmens (132)
             var knobCenter = GaugeDrawing.PointOnCircle(CenterX, CenterY, 180, knobDistance);
 
             var knobShadow = new Ellipse
@@ -746,6 +751,7 @@ namespace InstrumentPanel
             knobHitArea.MouseLeftButtonDown += Knob_MouseLeftButtonDown;
             knobHitArea.MouseMove += Knob_MouseMove;
             knobHitArea.MouseLeftButtonUp += Knob_MouseLeftButtonUp;
+            knobHitArea.LostMouseCapture += Knob_LostMouseCapture;
             GaugeCanvas.Children.Add(knobHitArea);
 
             // -----------------------------------------------------------
@@ -833,7 +839,22 @@ namespace InstrumentPanel
         // ---------------------------------------------------------------
         private void Knob_MouseWheel(object sender, MouseWheelEventArgs e)
         {
-            SendKnobStep(e.Delta > 0 ? 1 : -1);
+            // Delta akkumulieren: pro 120 (ein Rastschritt) genau ein Schritt, damit
+            // hochauflösende Mäuse/Touchpads nicht zu viele Schritte auslösen.
+            if (_wheelAccumulated != 0 && Math.Sign(_wheelAccumulated) != Math.Sign(e.Delta))
+                _wheelAccumulated = 0; // Richtungswechsel: Rest verwerfen
+            _wheelAccumulated += e.Delta;
+
+            while (_wheelAccumulated >= 120)
+            {
+                SendKnobStep(1);
+                _wheelAccumulated -= 120;
+            }
+            while (_wheelAccumulated <= -120)
+            {
+                SendKnobStep(-1);
+                _wheelAccumulated += 120;
+            }
             e.Handled = true;
         }
 
@@ -849,6 +870,7 @@ namespace InstrumentPanel
         private void Knob_MouseMove(object sender, MouseEventArgs e)
         {
             if (!_dragging) return;
+            if (e.LeftButton != MouseButtonState.Pressed) { _dragging = false; return; }
 
             double x = e.GetPosition(GaugeCanvas).X;
             double delta = x - _dragStartX; // nach rechts ziehen = positiv = erhöhen
@@ -873,10 +895,16 @@ namespace InstrumentPanel
             ((UIElement)sender).ReleaseMouseCapture();
         }
 
+        private void Knob_LostMouseCapture(object sender, MouseEventArgs e)
+        {
+            // Mausaufnahme verloren (z.B. Fensterwechsel): Drag beenden, sonst hängt er fest.
+            _dragging = false;
+        }
+
         private void SendKnobStep(int direction)
         {
             _service?.SendEvent(direction > 0 ? "ATTITUDE_BARS_POSITION_UP" : "ATTITUDE_BARS_POSITION_DOWN");
-            DebugLog.Write("[ATTITUDE-KNOB] direction=" + direction);
+            DebugLog.Write(() => "[ATTITUDE-KNOB] direction=" + direction);
 
             if (_knobRotation != null)
                 _knobRotation.Angle -= direction * KnobDegreesPerStep; // Richtung umgekehrt

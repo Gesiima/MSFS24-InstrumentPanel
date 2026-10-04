@@ -19,7 +19,7 @@ namespace InstrumentPanel
         // ---------------------------------------------------------------
         private const double DialMaxSpeed = 200;   // Skalenende (entspricht der echten Anzeige im Simulator)
         private const double VFE = 85;              // weißer Bogen: Ende (max. Klappengeschwindigkeit)
-        private const double VS1 = 48;              // grüner Bogen: Anfang (VS0, Stall in Landekonfiguration)
+        private const double VS1 = 48;              // grüner Bogen: Anfang (VS1, Stall in Reisekonfiguration). Der weiße Bogen beginnt davon unabhängig bei ScaleStart (40, ca. VS0)
         private const double VNO = 129;             // grüner Bogen: Ende / gelber Bogen: Anfang
         private const double VNE = 163;             // rote Strichmarkierung (nie überschreiten)
 
@@ -83,14 +83,12 @@ namespace InstrumentPanel
                 data => UpdateNeedle(data.Airspeed));
         }
 
-        public void UpdateStatus(string text, Brush color)
-        {
-            // Verbindungsstatus wird jetzt zentral einmal im Fenster (MainWindow)
-            // angezeigt, nicht mehr pro Anzeige - hier bewusst keine Aktion nötig.
-        }
-
         private void UpdateNeedle(double speedKnots)
         {
+            // NaN/Infinity nie an die RotateTransform weiterreichen.
+            if (double.IsNaN(speedKnots) || double.IsInfinity(speedKnots))
+                return;
+
             double clamped = Math.Max(0, Math.Min(DialMaxSpeed, speedKnots));
             double angle = AngleForSpeed(clamped);
 
@@ -141,7 +139,8 @@ namespace InstrumentPanel
             GaugeCanvas.Children.Add(face);
 
             // Hauptbögen: Grün (Normalbereich) und Gelb (Vorsicht), dick und durchgehend.
-            // 30% weiter innen als der weiße Bogen (Abstand 10 -> 13).
+            // Beide Bögen: Dicke 17,5 bei Mittenradius 115 (Außenkante 123,75), also
+            // weiter innen als der weiße Akzentbogen (Mittenradius 123,5, Dicke 17).
             DrawArcBand(VS1, VNO, Brushes.LimeGreen, 17.5, 115);
             DrawArcBand(VNO, VNE, new SolidColorBrush(Color.FromRgb(0xF5, 0xD0, 0x20)), 17.5, 115);
 
@@ -156,6 +155,9 @@ namespace InstrumentPanel
             // Start um einen halben GROSSEN Strich früher, Ende um einen halben
             // KLEINEN Strich später (Striche sind Kreisbögen an einem festen Radius -
             // Umrechnung Strichbreite -> Winkel über den mittleren Radius ~121).
+            // Hinweis: Der Wert 121 ist ein kalibrierter Näherungswert; die tatsächliche
+            // Strichmitte liegt bei ca. 114 (große Striche, 99,4-128) bzw. ca. 118 (kleine
+            // Striche, 108,5-128). Bewusst nicht geändert (visuell kalibriert).
             const double avgTickRadius = 121;
             double majorHalfAngle = (3.5 / 2) / avgTickRadius * (180 / Math.PI);
             double minorHalfAngle = (2.0 / 2) / avgTickRadius * (180 / Math.PI);

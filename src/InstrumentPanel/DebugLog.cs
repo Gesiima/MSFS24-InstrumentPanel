@@ -17,9 +17,31 @@ namespace InstrumentPanel
         private static readonly string LogPath =
             Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
 
+        /// <summary>True, wenn Debug-Logging aktiv ist (lässt teure Meldungen vorab überspringen).</summary>
+        public static bool Enabled => AppSettings.DebugLoggingEnabled;
+
+        /// <summary>
+        /// Wie Write(string), baut die Meldung aber nur, wenn das Logging aktiv ist -
+        /// für Aufrufe in heißen Pfaden (z.B. pro Frame), damit nichts umsonst
+        /// zusammengesetzt wird.
+        /// </summary>
+        public static void Write(Func<string> messageFactory)
+        {
+            if (!Enabled || messageFactory == null) return;
+
+            try
+            {
+                Write(messageFactory());
+            }
+            catch
+            {
+                // Eine fehlerhafte Meldungs-Factory darf die App nicht stören.
+            }
+        }
+
         public static void Write(string message)
         {
-            if (!AppSettings.DebugLoggingEnabled) return;
+            if (!Enabled) return;
 
             try
             {

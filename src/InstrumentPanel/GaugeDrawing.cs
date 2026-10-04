@@ -44,6 +44,10 @@ namespace InstrumentPanel
         public static void AddCenteredText(Canvas canvas, string text, double centerX, double centerY,
             double fontSize, Brush brush, bool bold, double rotationDeg = 0)
         {
+            // Null-sicher. Die Breitenschätzung unten bleibt bewusst bestehen: die
+            // Anzeigen wurden visuell gegen diese Schätzung kalibriert, eine
+            // Messung per Measure/DesiredSize würde die Texte sichtbar verschieben.
+            text = text ?? "";
             var tb = new TextBlock
             {
                 Text = text,

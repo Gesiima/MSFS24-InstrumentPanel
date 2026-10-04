@@ -30,7 +30,8 @@ namespace InstrumentPanel
 
         public static Brush Create(string mode, string customImagePath)
         {
-            switch (mode)
+            // Modus case-insensitiv auswerten ("Dark-Panel" o.ä. aus settings.json)
+            switch ((mode ?? "none").Trim().ToLowerInvariant())
             {
                 case "brushed-metal":
                     return BrushedMetal();
@@ -129,21 +130,34 @@ namespace InstrumentPanel
         /// </summary>
         private static Brush CustomImage(string path)
         {
-            if (string.IsNullOrWhiteSpace(path) || !System.IO.File.Exists(path))
+            if (string.IsNullOrWhiteSpace(path))
                 return Brushes.Transparent;
 
             try
             {
+                // Relative Pfade gegen den Programmordner auflösen (nicht gegen das
+                // aktuelle Arbeitsverzeichnis, das je nach Start variiert).
+                string fullPath = System.IO.Path.IsPathRooted(path)
+                    ? path
+                    : System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, path);
+
+                if (!System.IO.File.Exists(fullPath))
+                {
+                    DebugLog.Write("WindowBackgroundBrushes: Bilddatei nicht gefunden - " + fullPath);
+                    return Brushes.Transparent;
+                }
+
                 var bitmap = new BitmapImage();
                 bitmap.BeginInit();
                 bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                bitmap.UriSource = new Uri(path, UriKind.Absolute);
+                bitmap.UriSource = new Uri(fullPath, UriKind.Absolute);
                 bitmap.EndInit();
                 bitmap.Freeze();
                 return new ImageBrush(bitmap) { Stretch = Stretch.UniformToFill };
             }
-            catch
+            catch (Exception ex)
             {
+                DebugLog.Write("WindowBackgroundBrushes: Bild konnte nicht geladen werden - " + ex.Message);
                 return Brushes.Transparent;
             }
         }

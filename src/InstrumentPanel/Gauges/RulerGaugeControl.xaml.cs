@@ -43,10 +43,6 @@ namespace InstrumentPanel
             // Kein SimConnect-Bezug - reines Mess-Werkzeug.
         }
 
-        public void UpdateStatus(string text, Brush color)
-        {
-        }
-
         private void DrawRulers()
         {
             GaugeCanvas.Children.Add(new Rectangle

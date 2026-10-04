@@ -48,11 +48,6 @@ namespace InstrumentPanel
                 data => UpdateNeedle(data.Vsi));
         }
 
-        public void UpdateStatus(string text, Brush color)
-        {
-            // Verbindungsstatus wird zentral im Fenster (MainWindow) angezeigt.
-        }
-
         /// <summary>
         /// Winkel für einen Wert in der x100-ft/min-Skala (z.B. 5 = 500 ft/min),
         /// linear (siehe DegreesPerUnit). Positiv = Steigen (im Uhrzeigersinn von
@@ -84,6 +79,18 @@ namespace InstrumentPanel
             if (absUnitsRaw >= 20)
                 return 270 + sign * 180;
 
+            // Stetiger Übergang zum Anschlag: Unterhalb von 19 gilt unverändert die
+            // kalibrierte Tick-Winkelformel; zwischen 19 und 20 wird linear von
+            // deren Winkel (19 * DegreesPerUnit) auf den Anschlag (180°) eingeblendet,
+            // damit der Zeiger bei |20| nicht von ~172° auf 180° springt.
+            const double blendStartUnits = 19;
+            if (absUnitsRaw > blendStartUnits)
+            {
+                double startOffset = blendStartUnits * DegreesPerUnit;
+                double t = absUnitsRaw - blendStartUnits; // 0..1
+                return 270 + sign * (startOffset + t * (180 - startOffset));
+            }
+
             return AngleForTickUnits(units);
         }
 
@@ -91,8 +98,11 @@ namespace InstrumentPanel
 
         private void UpdateNeedle(double fpm)
         {
+            // NaN/Infinity verwerfen (würde sonst einen ungültigen Winkel erzeugen).
+            if (double.IsNaN(fpm) || double.IsInfinity(fpm)) return;
+
             double angle = AngleForFpm(fpm);
-            DebugLog.Write("[VSI] raw fpm=" + fpm + ", units=" + (fpm / 100.0) + ", angle=" + angle);
+            DebugLog.Write(() => "[VSI] raw fpm=" + fpm + ", units=" + (fpm / 100.0) + ", angle=" + angle);
             if (_needleRotation != null)
                 _needleRotation.Angle = angle;
         }
@@ -139,7 +149,7 @@ namespace InstrumentPanel
             DrawMajorTickAndLabel(0); // die 0 gehört beiden Seiten gemeinsam
 
             // Die "20"-Beschriftung gibt es nur einmal, genau bei 3-Uhr (90°) -
-            // gemeinsam für beide 20er-Striche (Steigen bei 83°, Sinken bei 97°).
+            // gemeinsam für beide 20er-Striche (Steigen bei 82°, Sinken bei 98° = 270° ± 172°).
             var label20Point = GaugeDrawing.PointOnCircle(CenterX, CenterY, 90, OuterRadius - 44);
             GaugeDrawing.AddCenteredText(GaugeCanvas, "20", label20Point.X, label20Point.Y, 24, Brushes.White, true);
 
@@ -190,7 +200,7 @@ namespace InstrumentPanel
             DrawTickAt(15 * sign, true);
 
             // Die 20 ist ein Sonderfall: beide Striche (Steigen/Sinken) haben ihre
-            // eigene Position (83°/97°), aber es gibt nur EINE gemeinsame "20"-
+            // eigene Position (82°/98° = 270° ± 172°), aber es gibt nur EINE gemeinsame "20"-
             // Beschriftung genau bei 3-Uhr (90°) - daher hier nur der Strich,
             // die Beschriftung kommt separat (einmalig) in DrawGaugeFace.
             DrawMajorTick(20 * sign);

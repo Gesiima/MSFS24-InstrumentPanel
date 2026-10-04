@@ -41,12 +41,6 @@ namespace InstrumentPanel
             public double ToFrom;      // Enum: 0=kein Signal, 1=TO, 2=FROM
             public double Cdi;         // Nadel-Auslenkung, ±127 (Vollausschlag)
             public double CdiSource;   // L-Var AS430_CDI_Source_1: 1=GPS, 0=VLOC
-            public double AvionicsMasterBus1; // AVIONICS MASTER SWITCH:1: 0=aus, 1=an
-            public double AvionicsMasterBus2; // AVIONICS MASTER SWITCH:2: 0=aus, 1=an
-            public double AvionicsMasterNoIndex; // AVIONICS MASTER SWITCH (ohne Index): 0=aus, 1=an
-            public double CircuitAvionicsOn; // CIRCUIT AVIONICS ON (ohne Index)
-            public double CircuitAvionicsOn1; // CIRCUIT AVIONICS ON:1
-            public double CircuitAvionicsOn2; // CIRCUIT AVIONICS ON:2
             public double LineConnectionBus1; // O:ELECTRICAL:...:ELECTRICAL_Line_BUS_1_To_AVIONICS_BUS_1_Position
             public double LineConnectionBus2; // O:ELECTRICAL:...:ELECTRICAL_Line_BUS_2_To_AVIONICS_BUS_2_Position
             public double BatteryMaster; // ELECTRICAL MASTER BATTERY: 0=aus, 1=an
@@ -60,6 +54,7 @@ namespace InstrumentPanel
         private bool _dragging;
         private double _dragStartX;
         private double _dragAccum;
+        private double _wheelAccum; // aufsummierte Mausrad-Deltas (ein Schritt pro 120)
 
         private const double DragPixelsPerStep = 5; // Zwischenwert (war 6, dann 3)
         private const double KnobDegreesPerStep = 1.5; // rein optische Dreh-Rückmeldung des Knopfes selbst
@@ -80,22 +75,12 @@ namespace InstrumentPanel
                     ("NAV TOFROM:2", "enum", SIMCONNECT_DATATYPE.FLOAT64),
                     ("NAV CDI:2", "number", SIMCONNECT_DATATYPE.FLOAT64),
                     ("L:AS430_CDI_Source_1", "Bool", SIMCONNECT_DATATYPE.FLOAT64),
-                    ("AVIONICS MASTER SWITCH:1", "Bool", SIMCONNECT_DATATYPE.FLOAT64),
-                    ("AVIONICS MASTER SWITCH:2", "Bool", SIMCONNECT_DATATYPE.FLOAT64),
-                    ("AVIONICS MASTER SWITCH", "Bool", SIMCONNECT_DATATYPE.FLOAT64),
-                    ("CIRCUIT AVIONICS ON", "Bool", SIMCONNECT_DATATYPE.FLOAT64),
-                    ("CIRCUIT AVIONICS ON:1", "Bool", SIMCONNECT_DATATYPE.FLOAT64),
-                    ("CIRCUIT AVIONICS ON:2", "Bool", SIMCONNECT_DATATYPE.FLOAT64),
                     ("O:ELECTRICAL:ELECTRICAL_SWITCH_AVIONICS_BUS_1:ELECTRICAL_Line_BUS_1_To_AVIONICS_BUS_1_Position", "number", SIMCONNECT_DATATYPE.FLOAT64),
                     ("O:ELECTRICAL:ELECTRICAL_SWITCH_AVIONICS_BUS_2:ELECTRICAL_Line_BUS_2_To_AVIONICS_BUS_2_Position", "number", SIMCONNECT_DATATYPE.FLOAT64),
                     ("ELECTRICAL MASTER BATTERY", "Bool", SIMCONNECT_DATATYPE.FLOAT64),
                     ("GENERAL ENG GENERATOR SWITCH:1", "Bool", SIMCONNECT_DATATYPE.FLOAT64)
                 },
                 OnData);
-        }
-
-        public void UpdateStatus(string text, Brush color)
-        {
         }
 
         private double _displayedToY = -FlagPanelReach;   // Standard: versteckt (oben)
@@ -106,8 +91,22 @@ namespace InstrumentPanel
         private DateTime? _selfTestStartTime; // gesetzt, während die Einschalt-Selbsttest-Sequenz läuft
         private DateTime? _lastUpdateTime;
 
+        // Begrenzt eine Differenz auf maxStep - ohne Math.Sign (wirft bei NaN eine ArithmeticException).
+        private static double LimitStep(double diff, double maxStep)
+        {
+            if (Math.Abs(diff) <= maxStep) return diff;
+            return diff > 0 ? maxStep : -maxStep;
+        }
+
+        private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+
         private void OnData(VorStruct data)
         {
+            // NaN/Infinity verwerfen (würde sonst die Anzeige dauerhaft vergiften).
+            if (!IsFinite(data.Obs) || !IsFinite(data.ToFrom) || !IsFinite(data.Cdi) || !IsFinite(data.CdiSource)
+                || !IsFinite(data.LineConnectionBus1) || !IsFinite(data.LineConnectionBus2)
+                || !IsFinite(data.BatteryMaster) || !IsFinite(data.GeneratorSwitch1)) return;
+
             var now = DateTime.UtcNow;
             double deltaTimeSec = _lastUpdateTime.HasValue ? (now - _lastUpdateTime.Value).TotalSeconds : 0;
             deltaTimeSec = Math.Max(0, Math.Min(1, deltaTimeSec)); // gegen Ausreißer (z.B. nach Pause) absichern
@@ -125,10 +124,14 @@ namespace InstrumentPanel
                 }
                 else
                 {
-                    double diff = ((targetAngle - _displayedObsAngle.Value + 540) % 360) - 180; // kürzester Weg, -180..+180
+                    // Kürzester Weg, -180..+180. C#-Modulo liefert bei negativem
+                    // Dividenden negative Reste - daher erst auf (-360..360) reduzieren,
+                    // dann +540 und erneut Modulo (_displayedObsAngle läuft unbegrenzt mit).
+                    double rawDiff = targetAngle - _displayedObsAngle.Value;
+                    double diff = (((rawDiff % 360) + 540) % 360) - 180;
                     const double maxDegPerSec = 180; // Höchstgeschwindigkeit der Glättung
                     double maxStep = maxDegPerSec * deltaTimeSec;
-                    _displayedObsAngle += Math.Abs(diff) <= maxStep ? diff : Math.Sign(diff) * maxStep;
+                    _displayedObsAngle += LimitStep(diff, maxStep);
                 }
                 _cardRotation.Angle = _displayedObsAngle.Value; // Scheibe dreht sich entgegen dem eingestellten Kurs, damit dieser oben steht
             }
@@ -147,12 +150,7 @@ namespace InstrumentPanel
             bool anyBusOn = hasElectricalPower && (data.LineConnectionBus1 != 0 || data.LineConnectionBus2 != 0);
             if (_previousAnyAvionicsBusOn.HasValue && !_previousAnyAvionicsBusOn.Value && anyBusOn)
                 _selfTestStartTime = now;
-            DebugLog.Write("[VOR-SELFTEST] bus1=" + data.AvionicsMasterBus1 + ", bus2=" + data.AvionicsMasterBus2
-                + ", noIndex=" + data.AvionicsMasterNoIndex
-                + ", circuitNoIdx=" + data.CircuitAvionicsOn
-                + ", circuit1=" + data.CircuitAvionicsOn1
-                + ", circuit2=" + data.CircuitAvionicsOn2
-                + ", lineBus1=" + data.LineConnectionBus1
+            DebugLog.Write(() => "[VOR-SELFTEST] lineBus1=" + data.LineConnectionBus1
                 + ", lineBus2=" + data.LineConnectionBus2
                 + ", battery=" + data.BatteryMaster + ", generator=" + data.GeneratorSwitch1
                 + ", hasElectricalPower=" + hasElectricalPower
@@ -212,7 +210,7 @@ namespace InstrumentPanel
                         const double maxDegPerSec = 140;
                         double maxStep = maxDegPerSec * deltaTimeSec;
                         double diff = targetNeedleAngle - _displayedNeedleAngle.Value;
-                        _displayedNeedleAngle += Math.Abs(diff) <= maxStep ? diff : Math.Sign(diff) * maxStep;
+                        _displayedNeedleAngle += LimitStep(diff, maxStep);
                     }
                 }
                 _needleRotation.Angle = _displayedNeedleAngle.Value;
@@ -235,15 +233,15 @@ namespace InstrumentPanel
                 // wird dabei nie sichtbar.
                 double targetToY = effectiveToFrom == 1 ? 0 : -FlagPanelReach;
                 double targetFromY = effectiveToFrom == 2 ? 0 : FlagPanelReach;
-                DebugLog.Write("[VOR] toFrom=" + data.ToFrom + ", cdiSource=" + data.CdiSource + ", isVloc=" + isVloc + ", effectiveToFrom=" + effectiveToFrom);
+                DebugLog.Write(() => "[VOR] toFrom=" + data.ToFrom + ", cdiSource=" + data.CdiSource + ", isVloc=" + isVloc + ", effectiveToFrom=" + effectiveToFrom);
 
                 double maxStep = FlagPanelReach / swingDurationSec * deltaTimeSec; // größtmögliche Strecke je Vorhang
 
                 double diffTo = targetToY - _displayedToY;
-                _displayedToY += Math.Abs(diffTo) <= maxStep ? diffTo : Math.Sign(diffTo) * maxStep;
+                _displayedToY += LimitStep(diffTo, maxStep);
 
                 double diffFrom = targetFromY - _displayedFromY;
-                _displayedFromY += Math.Abs(diffFrom) <= maxStep ? diffFrom : Math.Sign(diffFrom) * maxStep;
+                _displayedFromY += LimitStep(diffFrom, maxStep);
 
                 _toPanelTranslate.Y = _displayedToY;
                 _fromPanelTranslate.Y = _displayedFromY;
@@ -519,7 +517,7 @@ namespace InstrumentPanel
             // "versteckt"-Position muss nur bis hierhin fahren (nicht bis ganz h),
             // da der Vorhang wegen des Trapezes ohnehin nicht weiter reicht. Das
             // bringt TO/FROM beim Kreuzen näher zusammen (keine Lücke mehr).
-            double panelReach = (h / 2 + y1) + TrapFraction * (h / 2 - y1) - FlagOverlap;
+            double panelReach = FlagPanelReach; // gleiche Formel wie die Klassenkonstante (h = FlagHeight, y1 = FlagY1)
             Point Lerp(Point a, Point b, double t) => new Point(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
 
             var toWaistRight = HexPoint(2, halfW, h / 2);
@@ -632,7 +630,14 @@ namespace InstrumentPanel
             var hitArea = new Canvas { Width = knobDiameter * 1.5, Height = knobDiameter * 1.5, Background = Brushes.Transparent, Cursor = Cursors.Hand };
             Canvas.SetLeft(hitArea, knobCenter.X - knobRadius * 1.5);
             Canvas.SetTop(hitArea, knobCenter.Y - knobRadius * 1.5);
-            hitArea.MouseWheel += (s, e) => { SendKnobStep(e.Delta > 0 ? 1 : -1); e.Handled = true; };
+            // Mausrad: Deltas aufsummieren, ein Schritt pro 120 (Richtung: Delta > 0 = INC).
+            hitArea.MouseWheel += (s, e) =>
+            {
+                _wheelAccum += e.Delta;
+                while (_wheelAccum >= 120) { SendKnobStep(1); _wheelAccum -= 120; }
+                while (_wheelAccum <= -120) { SendKnobStep(-1); _wheelAccum += 120; }
+                e.Handled = true;
+            };
             hitArea.MouseLeftButtonDown += (s, e) =>
             {
                 _dragging = true;
@@ -643,12 +648,15 @@ namespace InstrumentPanel
             };
             hitArea.MouseMove += (s, e) => HandleDrag(e);
             hitArea.MouseLeftButtonUp += (s, e) => { _dragging = false; ((UIElement)s).ReleaseMouseCapture(); };
+            // Verlorene Mausaufnahme (z.B. Fensterwechsel) beendet das Ziehen.
+            hitArea.LostMouseCapture += (s, e) => { _dragging = false; };
             GaugeCanvas.Children.Add(hitArea);
         }
 
         private void HandleDrag(MouseEventArgs e)
         {
             if (!_dragging) return;
+            if (e.LeftButton != MouseButtonState.Pressed) { _dragging = false; return; }
 
             double x = e.GetPosition(GaugeCanvas).X;
             double delta = x - _dragStartX;

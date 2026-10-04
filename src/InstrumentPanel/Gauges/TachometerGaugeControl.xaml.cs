@@ -30,7 +30,9 @@ namespace InstrumentPanel
         private const double DegPerRpm = (CalAngleHigh - CalAngleLow) / (CalRpmHigh - CalRpmLow);
 
         private const double GreenStart = 2100;
-        private const double GreenEnd = 2700; // korrigiert von 2800 auf 2700
+        // Grüner Bogen: 2100 bis 2700 U/min. Die rote Linie liegt bei 2700 U/min
+        // (maximale Dauerdrehzahl, Cessna 172S: 2700 U/min).
+        private const double GreenEnd = 2700;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct TachStruct
@@ -56,11 +58,6 @@ namespace InstrumentPanel
                 data => UpdateNeedle(data.Rpm));
         }
 
-        public void UpdateStatus(string text, Brush color)
-        {
-            // Verbindungsstatus wird zentral im Fenster (MainWindow) angezeigt.
-        }
-
         private static double AngleForRpm(double rpm)
         {
             double clamped = Math.Max(RpmMin, Math.Min(RpmMax, rpm));
@@ -69,6 +66,10 @@ namespace InstrumentPanel
 
         private void UpdateNeedle(double rpm)
         {
+            // NaN/Infinity nie an die RotateTransform weiterreichen.
+            if (double.IsNaN(rpm) || double.IsInfinity(rpm))
+                return;
+
             if (_needleRotation != null)
                 _needleRotation.Angle = AngleForRpm(rpm);
         }
@@ -113,17 +114,24 @@ namespace InstrumentPanel
             // da keine Überdeckung von Ticks mehr nötig ist.
             const double greenThickness = 14;
             const double greenOuterRadius = 118 + greenThickness / 2; // feste Außenkante aller drei Segmente
+            // Die Segmentgrenzen entsprechen der maximalen Dauerdrehzahl in Abhängigkeit
+            // von der Höhe: bis 2500 U/min auf Meereshöhe (SL, volle Dicke), bis 2600 U/min
+            // auf 5000 ft (75% Dicke), bis 2700 U/min auf 10000 ft (50% Dicke).
             DrawArcBand(GreenStart, 2500, Brushes.LimeGreen, greenThickness, greenOuterRadius - greenThickness / 2);
             DrawArcBand(2500, 2600, Brushes.LimeGreen, greenThickness * 0.75, greenOuterRadius - greenThickness * 0.75 / 2);
             DrawArcBand(2600, GreenEnd, Brushes.LimeGreen, greenThickness * 0.5, greenOuterRadius - greenThickness * 0.5 / 2);
 
             // Striche alle 500 U/min (groß, mit Zahl X100) / alle 100 U/min (klein).
             // Strichlänge wie beim Höhenmesser, aber doppelt so dick.
-            const double greenOuterEdge = 125; // muss zur Außenkante des grünen Bereichs oben passen
-            const double labelTextRadius = 120; // Mittelpunkt des Textfelds für SL/5/10 (zum Testen)
+            const double greenOuterEdge = greenOuterRadius; // Außenkante des grünen Bereichs (= 125)
+            // Mittelpunkt des Textfelds für die Höhenmarken: "SL" (2500 U/min, Meereshöhe),
+            // "5" (2600 U/min, 5000 ft) und "10" (2700 U/min, 10000 ft)
+            const double labelTextRadius = 120;
             for (double rpm = RpmMin; rpm <= RpmMax; rpm += 100)
             {
-                bool isMajor = rpm % 500 == 0;
+                // Ganzzahliger Wert gegen Gleitkomma-Ungenauigkeiten beim Vergleichen
+                int rpmInt = (int)Math.Round(rpm);
+                bool isMajor = rpmInt % 500 == 0;
                 double angle = AngleForRpm(rpm);
                 double outer = OuterRadius - 4;
                 double inner = isMajor ? outer - 22 : outer - 13;
@@ -134,11 +142,11 @@ namespace InstrumentPanel
                 // wie alle anderen Ticks bis 128 nach außen, brauchen aber KEINE
                 // Überdeckung durch den grünen Bereich mehr, da kein Überlapp
                 // besteht.
-                if (rpm == 2500 || rpm == 2600)
+                if (rpmInt == 2500 || rpmInt == 2600)
                 {
                     outer = OuterRadius - 4; // 128, wie alle anderen Ticks
                     inner = greenOuterEdge; // 125, endet direkt an der Grün-Außenkante
-                    string replacementLabel = rpm == 2500 ? "SL" : "5";
+                    string replacementLabel = rpmInt == 2500 ? "SL" : "5"; // Höhenmarke: Meereshöhe bzw. 5000 ft
                     double labelAngle = angle - 1 + 0.5; // 1° entgegen Uhrzeigersinn, dann 0,5° Richtung 3-Uhr (im Uhrzeigersinn) zurück
                     var replacementPoint = GaugeDrawing.PointOnCircle(CenterX, CenterY, labelAngle, labelTextRadius);
                     GaugeDrawing.AddCenteredText(GaugeCanvas, replacementLabel, replacementPoint.X, replacementPoint.Y, 10, Brushes.White, true, labelAngle - 90);
@@ -166,8 +174,9 @@ namespace InstrumentPanel
             // Roter Strich am Ende des grünen Bereichs, so lang wie die 500er-Striche
             DrawRadialLine(GreenEnd, Brushes.Red, 6, OuterRadius - 4 - 22, OuterRadius - 4);
 
-            // "10" auf dem roten Strich, an dessen Unterkante (Innenradius) - wie bei
-            // "SL"/"5" oben, laut Referenzfoto.
+            // "10" (Höhenmarke 10000 ft, maximale Dauerdrehzahl 2700 U/min) auf dem
+            // roten Strich, an dessen Unterkante (Innenradius) - wie bei "SL"/"5" oben,
+            // laut Referenzfoto.
             double redLineLabelAngle = AngleForRpm(GreenEnd) - 1; // 1° entgegen des Uhrzeigersinns
             var redLineLabelPoint = GaugeDrawing.PointOnCircle(CenterX, CenterY, redLineLabelAngle, labelTextRadius);
             GaugeDrawing.AddCenteredText(GaugeCanvas, "10", redLineLabelPoint.X, redLineLabelPoint.Y, 10, Brushes.White, true, redLineLabelAngle - 90);

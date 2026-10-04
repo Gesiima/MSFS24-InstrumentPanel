@@ -26,13 +26,11 @@ namespace InstrumentPanel
 
         private const double ArcCenterOffset = 28.5; // 15/110 vom Rand, jetzt 5 weiter außen
         private const double ArcRadius = 81.6;        // 34/110
-        // Zeiger-Drehpunkt jetzt wieder getrennt vom Skalen-Mittelpunkt: 5 weiter
 
         private static readonly Point LeftArcCenterPoint = new Point((CenterX - OuterRadius) + ArcCenterOffset, CenterY);
         private static readonly Point RightArcCenterPoint = new Point((CenterX + OuterRadius) - ArcCenterOffset, CenterY);
-        // Vereinfacht: Zeiger-Drehpunkt = Skalen-Mittelpunkt (statt eigener Position).
-        // Zeiger-Drehpunkt jetzt wieder getrennt vom Skalen-Mittelpunkt: 5 weiter
-        // zur Mitte hin (größerer Abstand vom Rand).
+        // Zeiger-Drehpunkt und Skalen-Mittelpunkt sind getrennte Punkte: der
+        // Drehpunkt liegt 21 weiter zur Gehäuse-Mitte hin (größerer Abstand vom Rand).
         private const double NeedlePivotOffset = ArcCenterOffset + 21; // aktueller Endwert aller Korrekturen
         private static readonly Point LeftNeedlePivotPoint = new Point((CenterX - OuterRadius) + NeedlePivotOffset, CenterY);
         private static readonly Point RightNeedlePivotPoint = new Point((CenterX + OuterRadius) - NeedlePivotOffset, CenterY);
@@ -40,8 +38,9 @@ namespace InstrumentPanel
         private SimConnectService _service;
         private RotateTransform _leftNeedleRotate;
         private RotateTransform _rightNeedleRotate;
-        private double _displayedLeft = 0;
-        private double _displayedRight = 0;
+        // NaN = noch kein Messwert: beim ersten Wert (Start/Reconnect) springt der Zeiger sofort dorthin.
+        private double _displayedLeft = double.NaN;
+        private double _displayedRight = double.NaN;
         private DateTime? _lastUpdateTime;
 
         public FuelGaugeControl()
@@ -62,15 +61,14 @@ namespace InstrumentPanel
                 OnData);
         }
 
-        public void UpdateStatus(string text, Brush color)
-        {
-            // Verbindungsstatus wird zentral im Fenster (MainWindow) angezeigt.
-        }
-
         private void OnData(FuelStruct data)
         {
+            // NaN/Infinity verwerfen (würde sonst die Anzeige dauerhaft vergiften).
+            if (double.IsNaN(data.Left) || double.IsInfinity(data.Left) ||
+                double.IsNaN(data.Right) || double.IsInfinity(data.Right)) return;
+
             // Zeiger bei sprunghaften Wertänderungen (z.B. beim Betanken) nur mit
-            // maximal 10 Gallonen/Sekunde bewegen, statt sofort zu springen.
+            // maximal 15 Gallonen/Sekunde bewegen, statt sofort zu springen.
             const double maxRatePerSecond = 15.0;
             var now = DateTime.UtcNow;
             double deltaTimeSec = _lastUpdateTime.HasValue ? (now - _lastUpdateTime.Value).TotalSeconds : 0;
@@ -96,7 +94,10 @@ namespace InstrumentPanel
         {
             double diff = target - current;
             if (Math.Abs(diff) <= maxStep) return target;
-            return current + Math.Sign(diff) * maxStep;
+            // Ohne Math.Sign (wirft bei NaN eine ArithmeticException).
+            if (diff > 0) return current + maxStep;
+            if (diff < 0) return current - maxStep;
+            return current;
         }
 
         // Gemeinsame Winkel-Formel (auch von DrawScaleArc genutzt): 26 oben, 0
@@ -176,7 +177,8 @@ namespace InstrumentPanel
             DrawScaleArc(RightArcCenterPoint, ArcRadius, mirrored: true);
 
             // Zeiger im VSI-Stil (Basis mit kleiner 45°-Spitze hinten, Hauptspitze
-            // läuft spitz zu), Drehpunkt = Skalen-Mittelpunkt. Liegt über den Bögen/
+            // läuft spitz zu), Drehpunkt getrennt vom Skalen-Mittelpunkt
+            // (siehe NeedlePivotOffset). Liegt über den Bögen/
             // Zahlen, aber hinter den schwarzen Kreissegmenten (weiter unten).
             _leftNeedleRotate = DrawNeedle(LeftNeedlePivotPoint);
             _rightNeedleRotate = DrawNeedle(RightNeedlePivotPoint);

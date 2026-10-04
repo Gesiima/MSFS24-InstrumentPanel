@@ -23,8 +23,10 @@ namespace InstrumentPanel
     /// mechanischer Referenz-Zeiger, den der Pilot beim Abmagern von Hand auf
     /// den aktuellen (Peak-)EGT-Wert setzt, um die Abweichung davon abzulesen.
     /// MSFS/SimConnect liefert dafür keinen Wert (keine "Peak-EGT"- oder
-    /// "Referenz"-Variable) - der Knopf ist hier daher rein dekorativ ohne
-    /// Funktion, nur der tatsächliche EGT-Wert selbst wird angezeigt.
+    /// "Referenz"-Variable) - der Knopf ist hier daher rein visuell: Er lässt
+    /// sich per Maus-Ziehen und Mausrad frei innerhalb des Skalenbereichs
+    /// drehen (roter Referenz-Strich), hat aber keine SimConnect-Anbindung.
+    /// Die Nadel zeigt weiterhin nur den tatsächlichen EGT-Wert.
     /// </summary>
     public partial class EgtFlowGaugeControl : UserControl, IGauge
     {
@@ -54,8 +56,8 @@ namespace InstrumentPanel
         // sich nach dem ersten Live-Test eine andere Kalibrierung als sinnvoller
         // herausstellt (v.a. die EGT-Grenzen sind vom Vorbild-Foto nicht exakt
         // ablesbar, nur die "25°F je Teilstrich"-Beschriftung).
-        private static readonly double EgtMinF = AppSettings.EgtMinF; // unterer Skalenrand ("kalt"-Seite) - unterster großer Tick (Index 17) = 1760 Rankine (1300,33°F)
-        private static readonly double EgtMaxF = AppSettings.EgtMaxF; // oberer Skalenrand ("E"-Seite) - oberster großer Tick (Index 2) = 2060 Rankine (1600,33°F)
+        private static readonly double EgtMinF = AppSettings.EgtMinF; // unterer Skalenrand ("kalt"-Seite) - unterster Strich (Index 19) = Skalenanfang (Default 1260,33°F)
+        private static readonly double EgtMaxF = AppSettings.EgtMaxF; // oberer Skalenrand ("E"-Seite) - oberster Strich (Index 0) = Skalenende (Default 1640,33°F)
         private const double FlowMaxGph = 19; // oberer Skalenrand rechts (siehe Vorbild: höchste Zahl "19")
         private const double FlowGreenBandStart = 0;  // grüner Normalbereich
         private const double FlowGreenBandEnd = 12; // einen Tick (1 GAL/HR) weiter als zuvor
@@ -68,6 +70,7 @@ namespace InstrumentPanel
         private bool _dragging;
         private double _dragStartX;
         private double _dragAccum;
+        private double _wheelAccum; // aufsummierte Mausrad-Deltas (ein Schritt pro 120)
         private const double DragPixelsPerStep = 5;
         private const double KnobDegreesPerStep = 110.0 / 19.0 / 2.0; // halber Tick-Abstand (20 Ticks = 19 Zwischenräume über 110°) - Rastung trifft abwechselnd Tick und Tick-Mitte
         private double _displayedEgtF = double.NaN;
@@ -92,15 +95,13 @@ namespace InstrumentPanel
                 OnData);
         }
 
-        public void UpdateStatus(string text, Brush color)
-        {
-            // Verbindungsstatus wird zentral im Fenster (MainWindow) angezeigt.
-        }
-
         private void OnData(EgtFlowStruct data)
         {
             double egtF = data.EgtRankine - 459.67; // Rankine -> Fahrenheit
             double flow = data.FlowGph;
+
+            // NaN/Infinity verwerfen (würde sonst die Anzeige dauerhaft vergiften).
+            if (double.IsNaN(egtF) || double.IsInfinity(egtF) || double.IsNaN(flow) || double.IsInfinity(flow)) return;
 
             // EGT ändert sich beim Gasgeben vergleichsweise schnell, Fuel Flow
             // etwas gemächlicher - je eigene Glättungsrate statt eines
@@ -128,10 +129,19 @@ namespace InstrumentPanel
         {
             double diff = target - current;
             if (Math.Abs(diff) <= maxStep) return target;
-            return current + Math.Sign(diff) * maxStep;
+            // Ohne Math.Sign (wirft bei NaN eine ArithmeticException).
+            if (diff > 0) return current + maxStep;
+            if (diff < 0) return current - maxStep;
+            return current;
         }
 
-        private static double FractionEgt(double egtF) => Math.Max(0, Math.Min(1, (egtF - EgtMinF) / (EgtMaxF - EgtMinF)));
+        private static double FractionEgt(double egtF)
+        {
+            double min = EgtMinF, max = EgtMaxF;
+            // Konfig-Schutz: ungültiger Bereich (Max <= Min) -> Default-Werte, keine Division durch 0.
+            if (!(max > min)) { min = 1260.33; max = 1640.33; }
+            return Math.Max(0, Math.Min(1, (egtF - min) / (max - min)));
+        }
 
         // Flow-Skala ist NICHT durchgehend linear: 0 bis 5 GAL/HR ist auf der
         // Skala nur so breit wie EIN normaler kleiner Teilstrich (stark
@@ -353,12 +363,18 @@ namespace InstrumentPanel
             };
             hitArea.MouseMove += (s, e) => HandleEgtRefDrag(e);
             hitArea.MouseLeftButtonUp += (s, e) => { _dragging = false; ((UIElement)s).ReleaseMouseCapture(); };
+            // Verlorene Mausaufnahme (z.B. Fensterwechsel) beendet das Ziehen.
+            hitArea.LostMouseCapture += (s, e) => { _dragging = false; };
             // Drehen auch per Mausrad, solange der Mauszeiger über dem Knopf ist.
-            // Negatives Vorzeichen: Mausrad nach oben/vorne = Zeiger im
-            // Uhrzeigersinn (gefühlt "richtig herum").
+            // Ein Schritt pro 120 Delta (Deltas werden aufsummiert, damit auch
+            // feinauflösende Mäuse/Touchpads funktionieren). Mausrad nach
+            // oben/vorne (Delta > 0) = negativer Winkel-Schritt = Zeiger dreht
+            // GEGEN den Uhrzeigersinn (in Richtung "E"/heiß).
             hitArea.MouseWheel += (s, e) =>
             {
-                RotateEgtRefKnob(-Math.Sign(e.Delta) * KnobDegreesPerStep);
+                _wheelAccum += e.Delta;
+                while (_wheelAccum >= 120) { RotateEgtRefKnob(-KnobDegreesPerStep); _wheelAccum -= 120; }
+                while (_wheelAccum <= -120) { RotateEgtRefKnob(KnobDegreesPerStep); _wheelAccum += 120; }
                 e.Handled = true;
             };
             GaugeCanvas.Children.Add(hitArea);
@@ -388,6 +404,7 @@ namespace InstrumentPanel
         private void HandleEgtRefDrag(MouseEventArgs e)
         {
             if (!_dragging) return;
+            if (e.LeftButton != MouseButtonState.Pressed) { _dragging = false; return; }
 
             double x = e.GetPosition(GaugeCanvas).X;
             double delta = x - _dragStartX;

@@ -18,7 +18,7 @@ namespace InstrumentPanel
         private const double OuterRadius = 132; // jetzt genauso groß wie alle anderen Anzeigen - Skalierung nur noch übers Layout
 
         [StructLayout(LayoutKind.Sequential)]
-        private struct FuelStruct
+        private struct OilTempPressStruct
         {
             public double OilTemp;  // GENERAL ENG OIL TEMPERATURE:1 (°F)
             public double OilPress; // GENERAL ENG OIL PRESSURE:1 (PSI)
@@ -27,8 +27,8 @@ namespace InstrumentPanel
         private const double ArcCenterOffset = 28.5;
         private const double ArcRadius = 81.6;
 
-        // Skalen-Mittelpunkte 15 weiter nach außen versetzt (Zeiger-Drehpunkte
-        // bleiben unverändert an ihrer bisherigen Position - siehe
+        // Skalen-Mittelpunkte als feste absolute X-Werte (nicht aus ArcCenterOffset
+        // abgeleitet); die Zeiger-Drehpunkte liegen davon getrennt (siehe
         // LeftNeedlePivotPoint/RightNeedlePivotPoint weiter unten).
         private static readonly Point LeftArcCenterPoint = new Point(15, CenterY); // absolut auf X=15 gesetzt
         private static readonly Point RightArcCenterPoint = new Point(292.79 + 5, CenterY); // nochmal 5 weiter rechts
@@ -64,8 +64,9 @@ namespace InstrumentPanel
         private SimConnectService _service;
         private RotateTransform _leftNeedleRotate;
         private RotateTransform _rightNeedleRotate;
-        private double _displayedLeft = 0;
-        private double _displayedRight = 0;
+        // NaN = noch kein Messwert: beim ersten Wert (Start/Reconnect) springt der Zeiger sofort dorthin.
+        private double _displayedLeft = double.NaN;
+        private double _displayedRight = double.NaN;
         private DateTime? _lastUpdateTime;
 
         public OilTempPressGaugeControl()
@@ -77,7 +78,7 @@ namespace InstrumentPanel
         public void Initialize(SimConnectService service)
         {
             _service = service;
-            service.Register<FuelStruct>(
+            service.Register<OilTempPressStruct>(
                 new List<(string, string, SIMCONNECT_DATATYPE)>
                 {
                     ("GENERAL ENG OIL TEMPERATURE:1", "fahrenheit", SIMCONNECT_DATATYPE.FLOAT64),
@@ -86,22 +87,22 @@ namespace InstrumentPanel
                 OnData);
         }
 
-        public void UpdateStatus(string text, Brush color)
+        private void OnData(OilTempPressStruct data)
         {
-            // Verbindungsstatus wird zentral im Fenster (MainWindow) angezeigt.
-        }
+            double oilPressGauge = data.OilPress - AppSettings.OilPressAtmosphericOffsetPsi;
 
-        private void OnData(FuelStruct data)
-        {
-            // Zeiger bei sprunghaften Wertänderungen (z.B. beim Betanken) nur mit
-            // maximal 10 Gallonen/Sekunde bewegen, statt sofort zu springen.
+            // NaN/Infinity verwerfen (Rohwerte und das Ergebnis der Offset-Berechnung),
+            // würde sonst die Anzeige dauerhaft vergiften.
+            if (double.IsNaN(data.OilTemp) || double.IsInfinity(data.OilTemp) ||
+                double.IsNaN(oilPressGauge) || double.IsInfinity(oilPressGauge)) return;
+
+            // Zeiger bei sprunghaften Wertänderungen nur mit maximal 18 Einheiten
+            // pro Sekunde (°F bzw. PSI) bewegen, statt sofort zu springen.
             const double maxRatePerSecond = 18.0; // +20%, bleibt für TEMP und PRESS gemeinsam
             var now = DateTime.UtcNow;
             double deltaTimeSec = _lastUpdateTime.HasValue ? (now - _lastUpdateTime.Value).TotalSeconds : 0;
             deltaTimeSec = Math.Max(0, Math.Min(1, deltaTimeSec)); // gegen Ausreißer (z.B. nach Pause) absichern
             _lastUpdateTime = now;
-
-            double oilPressGauge = data.OilPress - AppSettings.OilPressAtmosphericOffsetPsi;
 
             if (double.IsNaN(_displayedLeft))
                 _displayedLeft = data.OilTemp;
@@ -122,7 +123,10 @@ namespace InstrumentPanel
         {
             double diff = target - current;
             if (Math.Abs(diff) <= maxStep) return target;
-            return current + Math.Sign(diff) * maxStep;
+            // Ohne Math.Sign (wirft bei NaN eine ArithmeticException).
+            if (diff > 0) return current + maxStep;
+            if (diff < 0) return current - maxStep;
+            return current;
         }
 
         // Verallgemeinerte stückweise ATAN2-Interpolation (Erweiterung von Fuels
@@ -155,14 +159,14 @@ namespace InstrumentPanel
             return 0;
         }
 
-        // TEMP zielt jetzt auf die Tick-Mitte (125,85, siehe DrawTempScaleArc),
-        // nicht mehr auf den alten ArcRadius (81,6) - die Ticks liegen inzwischen
-        // deutlich weiter außen. PRESS unverändert (Ticks dort noch nicht verschoben).
-        private const double TempNeedleTargetRadius = 113.85; // Tick-Innenseite (statt Tick-Mitte 125,85)
+        // TEMP zielt auf die Tick-Innenseite (113,85 = 137,85 - 24, siehe
+        // DrawTempScaleArc), nicht auf den alten ArcRadius (81,6) - die Ticks
+        // liegen deutlich weiter außen. Zeigerlänge = Zielradius minus 40 (siehe
+        // sharedNeedleLength), Breite bleibt unabhängig davon fest (siehe DrawNeedle).
+        private const double TempNeedleTargetRadius = 113.85; // Tick-Innenseite
         private static double AngleForTempNeedle(double tempF) => AngleForNeedlePiecewise(tempF, TempValues, TempAngles, LeftNeedlePivotPoint, LeftArcCenterPoint, TempNeedleTargetRadius);
-        // PRESS: gleiches Prinzip wie TEMP - ATAN2 zielt auf die Tick-Innenseite
-        // (81,6-13,5=68,1), Zeigerlänge = Zielradius minus 40, Breite bleibt
-        // unabhängig davon fest (siehe DrawNeedle).
+        // PRESS: ATAN2 zielt dagegen auf die Tick-MITTE (125,34), nicht auf die
+        // Innenseite (115,74).
         private const double PressNeedleTargetRadius = 125.34; // Mitte des PRESS-Ticks (Außenkante 134,94, Länge 19,2)
         private static double AngleForPressNeedle(double pressPsi) => AngleForNeedlePiecewise(pressPsi, PressValues, PressAngles, RightNeedlePivotPoint, RightArcCenterPoint, PressNeedleTargetRadius);
 
@@ -208,8 +212,8 @@ namespace InstrumentPanel
             GaugeCanvas.Children.Add(face);
 
             // Skalen-Bögen ZUERST gezeichnet, damit der Zeiger (danach) über ihnen
-            // (und den Zahlen) liegt. Mittelpunkt bei 15/110 von links (bzw.
-            // gespiegelt von rechts, jetzt 5 weiter außen), Radius 34/110.
+            // (und den Zahlen) liegt. Skalen-Mittelpunkte siehe LeftArcCenterPoint/
+            // RightArcCenterPoint (feste absolute X-Werte).
             DrawTempScaleArc(LeftArcCenterPoint, ArcRadius);
             DrawPressScaleArc(RightArcCenterPoint, ArcRadius);
 
@@ -221,7 +225,8 @@ namespace InstrumentPanel
             GaugeDrawing.AddCenteredText(GaugeCanvas, "OIL", CenterX + 10, CenterY + 117 - 4 - 3, 25.3125, Brushes.White, true);
 
             // Zeiger im VSI-Stil (Basis mit kleiner 45°-Spitze hinten, Hauptspitze
-            // läuft spitz zu), Drehpunkt = Skalen-Mittelpunkt. Liegt über den Bögen/
+            // läuft spitz zu), Drehpunkt getrennt vom Skalen-Mittelpunkt
+            // (siehe LeftNeedlePivotPoint/RightNeedlePivotPoint). Liegt über den Bögen/
             // Zahlen, aber hinter den schwarzen Kreissegmenten (weiter unten).
             // Beide Zeiger EXAKT gleich lang (fester Wert, unabhängig vom
             // jeweiligen ATAN2-Zielradius) - nur die Zielrichtung unterscheidet sich.

@@ -47,6 +47,8 @@ namespace InstrumentPanel
         private double _dragStartXRight;
         private double _dragAccumLeft;
         private double _dragAccumRight;
+        private int _wheelAccumLeft;  // aufsummiertes Mausrad-Delta (120 = ein Rastschritt)
+        private int _wheelAccumRight;
 
         public HeadingIndicatorGaugeControl()
         {
@@ -66,13 +68,13 @@ namespace InstrumentPanel
                 OnData);
         }
 
-        public void UpdateStatus(string text, Brush color)
-        {
-            // Verbindungsstatus wird zentral im Fenster (MainWindow) angezeigt.
-        }
-
         private void OnData(HeadingStruct data)
         {
+            // NaN/Infinity nie an die RotateTransform weiterreichen - Update überspringen.
+            if (double.IsNaN(data.Heading) || double.IsInfinity(data.Heading)
+                || double.IsNaN(data.HeadingBug) || double.IsInfinity(data.HeadingBug))
+                return;
+
             _currentHeading = data.Heading;
             _currentBug = data.HeadingBug;
 
@@ -82,7 +84,7 @@ namespace InstrumentPanel
             if (_bugMarkerRotation != null)
                 _bugMarkerRotation.Angle = _currentBug - _currentHeading; // relativ zur drehenden Kompassscheibe, nicht absolut
 
-            DebugLog.Write("[HDG] heading=" + _currentHeading + ", bug=" + _currentBug);
+            DebugLog.Write(() => "[HDG] heading=" + _currentHeading + ", bug=" + _currentBug);
         }
 
         // ---------------------------------------------------------------
@@ -284,7 +286,7 @@ namespace InstrumentPanel
             var knobCenter = GaugeDrawing.PointOnCircle(CenterX, CenterY, placementAngle, bezelMidRadius + knobRadius);
 
             // Einfache runde Knopf-Form (wie ursprünglich), mit Symbol/Text passend
-            // zum Vorbild-Foto: links "PRESS" + gebogener Doppelpfeil, rechts "HDG"
+            // zum Vorbild-Foto: links "PUSH" + gebogener Doppelpfeil, rechts "HDG"
             // + kleines rotes Kurswahlanzeiger-Symbol.
             var knobRotation = new RotateTransform(0, knobCenter.X, knobCenter.Y);
             var knobBody = new Ellipse
@@ -402,7 +404,7 @@ namespace InstrumentPanel
 
             if (isLeftKnob)
             {
-                hitArea.MouseWheel += (s, e) => { SendKnobStep(true, e.Delta > 0 ? 1 : -1, knobRotation); e.Handled = true; };
+                hitArea.MouseWheel += (s, e) => { HandleWheel(true, e.Delta, knobRotation); e.Handled = true; };
                 hitArea.MouseLeftButtonDown += (s, e) =>
                 {
                     _draggingLeft = true;
@@ -413,10 +415,11 @@ namespace InstrumentPanel
                 };
                 hitArea.MouseMove += (s, e) => HandleDrag(true, e, knobRotation);
                 hitArea.MouseLeftButtonUp += (s, e) => { _draggingLeft = false; ((UIElement)s).ReleaseMouseCapture(); };
+                hitArea.LostMouseCapture += (s, e) => { _draggingLeft = false; }; // Mausaufnahme verloren: Drag beenden
             }
             else
             {
-                hitArea.MouseWheel += (s, e) => { SendKnobStep(false, e.Delta > 0 ? 1 : -1, knobRotation); e.Handled = true; };
+                hitArea.MouseWheel += (s, e) => { HandleWheel(false, e.Delta, knobRotation); e.Handled = true; };
                 hitArea.MouseLeftButtonDown += (s, e) =>
                 {
                     _draggingRight = true;
@@ -427,13 +430,47 @@ namespace InstrumentPanel
                 };
                 hitArea.MouseMove += (s, e) => HandleDrag(false, e, knobRotation);
                 hitArea.MouseLeftButtonUp += (s, e) => { _draggingRight = false; ((UIElement)s).ReleaseMouseCapture(); };
+                hitArea.LostMouseCapture += (s, e) => { _draggingRight = false; }; // Mausaufnahme verloren: Drag beenden
             }
+        }
+
+        /// <summary>
+        /// Mausrad: Delta pro Knopf akkumulieren, pro 120 (ein Rastschritt) genau ein
+        /// Schritt (mit Vorzeichen), damit hochauflösende Mäuse/Touchpads nicht zu
+        /// viele Schritte auslösen.
+        /// </summary>
+        private void HandleWheel(bool isLeftKnob, int delta, RotateTransform knobRotation)
+        {
+            int accum = isLeftKnob ? _wheelAccumLeft : _wheelAccumRight;
+            if (accum != 0 && Math.Sign(accum) != Math.Sign(delta))
+                accum = 0; // Richtungswechsel: Rest verwerfen
+            accum += delta;
+
+            while (accum >= 120)
+            {
+                SendKnobStep(isLeftKnob, 1, knobRotation);
+                accum -= 120;
+            }
+            while (accum <= -120)
+            {
+                SendKnobStep(isLeftKnob, -1, knobRotation);
+                accum += 120;
+            }
+
+            if (isLeftKnob) _wheelAccumLeft = accum; else _wheelAccumRight = accum;
         }
 
         private void HandleDrag(bool isLeftKnob, MouseEventArgs e, RotateTransform knobRotation)
         {
             bool dragging = isLeftKnob ? _draggingLeft : _draggingRight;
             if (!dragging) return;
+
+            // Linke Taste nicht mehr gedrückt (Aufnahme verloren/Button außerhalb losgelassen): Drag beenden.
+            if (e.LeftButton != MouseButtonState.Pressed)
+            {
+                if (isLeftKnob) _draggingLeft = false; else _draggingRight = false;
+                return;
+            }
 
             double x = e.GetPosition(GaugeCanvas).X;
             double startX = isLeftKnob ? _dragStartXLeft : _dragStartXRight;
@@ -458,11 +495,10 @@ namespace InstrumentPanel
         }
 
         /// <summary>
-        /// Zeichnet das Kurswahlanzeiger-Symbol (gefaste Fünfeck-Form: Rechteck mit
-        /// einer Fase an der äußeren Kante) - genutzt sowohl als kleines Icon auf dem
-        /// HDG-Knopf als auch als echter Heading-Bug-Marker auf dem Zifferblatt.
-        /// </summary>
-        /// <summary>
+        /// Zeichnet EIN Kurswahlanzeiger-Symbol (gefaste Fünfeck-Form: Rechteck mit
+        /// einer Fase an der äußeren Kante) - genutzt (paarweise über
+        /// DrawCourseSelectorPair) sowohl als kleines Icon auf dem HDG-Knopf als auch
+        /// als echter Heading-Bug-Marker auf dem Zifferblatt.
         /// Exakte Form nach Vorgabe (Außenkanten, beginnend oben links, im
         /// Uhrzeigersinn): waagerecht 3, runter 5, links 1,5, rauf 3, dann
         /// diagonal zurück zum Start - macht ein unregelmäßiges Fünfeck.

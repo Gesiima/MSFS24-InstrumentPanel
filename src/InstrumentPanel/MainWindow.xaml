@@ -43,7 +43,9 @@
         <!-- Fenster-Steuerung (Minimieren/Maximieren/Schließen) mit dunklem
              Kontrastkasten dahinter, damit sie auch auf hellem Hintergrund
              (durch die Transparenz) sichtbar bleiben -->
-        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,4,4,0">
+        <!-- Panel.ZIndex: liegt über den Greifbereichen unten, damit das Resize-Rechteck
+             in der oberen rechten Ecke den Schließen-Button nicht überdeckt. -->
+        <StackPanel Panel.ZIndex="10" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,4,4,0">
             <Grid Margin="0,0,4,0">
                 <Rectangle Width="30" Height="30" Fill="#CC202020" RadiusX="4" RadiusY="4" />
                 <Button x:Name="LayoutDesignerButton"

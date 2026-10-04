@@ -2,6 +2,7 @@
 // Entstanden in Zusammenarbeit: Coding durch Claude (Anthropic), Anforderungen und Tests durch Gesiima.
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Web.Script.Serialization;
 
@@ -20,8 +21,10 @@ namespace InstrumentPanel
         public static int RefreshIntervalMs { get; private set; } = 100;
 
         /// <summary>
-        /// Startgröße je Anzeige in Pixeln (quadratisch). Das Fenster startet mit
-        /// Spaltenanzahl × Zeilenanzahl (aus layout.json) mal diesem Wert.
+        /// Kantenlänge (Pixel) einer "normalen" Anzeige, die sich im cells-Schema
+        /// über den größten vorkommenden rowSpan/colSpan erstreckt. Startgröße des
+        /// Fensters: Breite = Summe der Spaltenbreiten / größter colSpan × Wert,
+        /// Höhe = rowUnits / größter rowSpan × Wert (aus layout.json). Gültig 50..2000.
         /// </summary>
         public static double GaugeCellSize { get; private set; } = 375;
 
@@ -48,6 +51,13 @@ namespace InstrumentPanel
         /// läuft die Pumpe nicht mehr und der Kreisel läuft aus.
         /// </summary>
         public static double TurnCoordinatorVacuumThreshold { get; private set; } = 3.0;
+
+        /// <summary>
+        /// Schwellwert (in inHg) für SUCTION PRESSURE beim künstlichen Horizont
+        /// (Schlüssel "attitudeVacuumThreshold"). Wert &lt;= 0 schaltet die
+        /// Vakuum-Logik ab - der Kreisel gilt dann immer als an.
+        /// </summary>
+        public static double AttitudeVacuumThreshold { get; private set; } = 3.0;
 
         /// <summary>
         /// Wird vom SimConnect-Rohwert für GENERAL ENG OIL PRESSURE abgezogen
@@ -88,40 +98,128 @@ namespace InstrumentPanel
 
         private static void Load()
         {
+            Dictionary<string, object> root;
             try
             {
                 if (!File.Exists(SettingsPath)) return;
 
                 var json = File.ReadAllText(SettingsPath);
                 var serializer = new JavaScriptSerializer();
-                var root = serializer.Deserialize<Dictionary<string, object>>(json);
+                root = serializer.Deserialize<Dictionary<string, object>>(json);
                 if (root == null) return;
+            }
+            catch (Exception ex)
+            {
+                // Bei fehlerhafter Datei einfach die Standardwerte behalten,
+                // statt die App am Start scheitern zu lassen.
+                DebugLog.Write("AppSettings: settings.json nicht lesbar - " + ex.Message);
+                return;
+            }
 
-                if (root.TryGetValue("refreshIntervalMs", out var refreshObj))
-                    RefreshIntervalMs = Convert.ToInt32(refreshObj);
-
-                if (root.TryGetValue("gaugeCellSize", out var cellSizeObj))
-                    GaugeCellSize = Convert.ToDouble(cellSizeObj);
-
+            // debugLogging zuerst, damit die Meldungen zu allen weiteren Werten schon geloggt werden.
+            ReadKey("debugLogging", () =>
+            {
                 if (root.TryGetValue("debugLogging", out var debugObj))
-                    DebugLoggingEnabled = Convert.ToBoolean(debugObj);
+                    DebugLoggingEnabled = ToBool(debugObj);
+            });
 
+            // Jeder Schlüssel einzeln: ein kaputter Wert verwirft nicht alle folgenden.
+            ReadKey("refreshIntervalMs", () =>
+            {
+                if (root.TryGetValue("refreshIntervalMs", out var obj))
+                {
+                    if (TryToDouble(obj, out var value) && value >= 10 && value <= 5000)
+                        RefreshIntervalMs = (int)Math.Round(value);
+                    else
+                        DebugLog.Write("AppSettings: refreshIntervalMs außerhalb 10..5000 oder ungültig - Standard 100 bleibt");
+                }
+            });
+
+            ReadKey("gaugeCellSize", () =>
+            {
+                if (root.TryGetValue("gaugeCellSize", out var obj))
+                {
+                    if (TryToDouble(obj, out var value) && value >= 50 && value <= 2000)
+                        GaugeCellSize = value;
+                    else
+                        DebugLog.Write("AppSettings: gaugeCellSize außerhalb 50..2000 oder ungültig - Standard 375 bleibt");
+                }
+            });
+
+            ReadKey("turnCoordinator", () =>
+            {
                 if (root.TryGetValue("turnCoordinator", out var tcObj) && tcObj is Dictionary<string, object> tc)
                 {
-                    if (tc.TryGetValue("ballDivisor", out var divisorObj))
-                        TurnCoordinatorBallDivisor = Convert.ToDouble(divisorObj);
-                    if (tc.TryGetValue("vacuumThreshold", out var vacuumObj))
-                        TurnCoordinatorVacuumThreshold = Convert.ToDouble(vacuumObj);
+                    ReadKey("turnCoordinator.ballDivisor", () =>
+                    {
+                        if (tc.TryGetValue("ballDivisor", out var divisorObj))
+                        {
+                            if (TryToDouble(divisorObj, out var value) && value != 0)
+                                TurnCoordinatorBallDivisor = value;
+                            else
+                                DebugLog.Write("AppSettings: ballDivisor ist 0 oder ungültig - Standard 1.0");
+                        }
+                    });
+                    ReadKey("turnCoordinator.vacuumThreshold", () =>
+                    {
+                        if (tc.TryGetValue("vacuumThreshold", out var vacuumObj))
+                        {
+                            if (TryToDouble(vacuumObj, out var value) && value >= 0)
+                                TurnCoordinatorVacuumThreshold = value;
+                            else
+                                DebugLog.Write("AppSettings: turnCoordinator.vacuumThreshold negativ oder ungültig - Standard bleibt");
+                        }
+                    });
                 }
+            });
 
-                if (root.TryGetValue("oilPressAtmosphericOffsetPsi", out var oilOffsetObj))
-                    OilPressAtmosphericOffsetPsi = Convert.ToDouble(oilOffsetObj);
+            ReadKey("attitudeVacuumThreshold", () =>
+            {
+                if (root.TryGetValue("attitudeVacuumThreshold", out var obj))
+                {
+                    // Wert <= 0 ist erlaubt und bedeutet: Vakuum-Logik aus.
+                    if (TryToDouble(obj, out var value))
+                        AttitudeVacuumThreshold = value;
+                    else
+                        DebugLog.Write("AppSettings: attitudeVacuumThreshold ungültig - Standard 3.0 bleibt");
+                }
+            });
 
-                if (root.TryGetValue("egtMinF", out var egtMinObj))
-                    EgtMinF = Convert.ToDouble(egtMinObj);
-                if (root.TryGetValue("egtMaxF", out var egtMaxObj))
-                    EgtMaxF = Convert.ToDouble(egtMaxObj);
+            ReadKey("oilPressAtmosphericOffsetPsi", () =>
+            {
+                if (root.TryGetValue("oilPressAtmosphericOffsetPsi", out var obj))
+                {
+                    if (TryToDouble(obj, out var value))
+                        OilPressAtmosphericOffsetPsi = value;
+                    else
+                        DebugLog.Write("AppSettings: oilPressAtmosphericOffsetPsi ungültig - Standard bleibt");
+                }
+            });
 
+            ReadKey("egtMinF/egtMaxF", () =>
+            {
+                double min = EgtMinF, max = EgtMaxF;
+                bool hasMin = root.TryGetValue("egtMinF", out var egtMinObj) && TryToDouble(egtMinObj, out min);
+                bool hasMax = root.TryGetValue("egtMaxF", out var egtMaxObj) && TryToDouble(egtMaxObj, out max);
+                if (!hasMin) min = EgtMinF;
+                if (!hasMax) max = EgtMaxF;
+
+                // Beide Grenzen gemeinsam prüfen: Max muss über Min liegen, sonst Standardwerte.
+                if (max > min)
+                {
+                    EgtMinF = min;
+                    EgtMaxF = max;
+                }
+                else
+                {
+                    DebugLog.Write("AppSettings: egtMaxF muss größer als egtMinF sein - Standardwerte 1260.33/1640.33");
+                    EgtMinF = 1260.33;
+                    EgtMaxF = 1640.33;
+                }
+            });
+
+            ReadKey("windowBackground", () =>
+            {
                 if (root.TryGetValue("windowBackground", out var bgObj) && bgObj is Dictionary<string, object> bg)
                 {
                     if (bg.TryGetValue("mode", out var modeObj))
@@ -129,12 +227,56 @@ namespace InstrumentPanel
                     if (bg.TryGetValue("imagePath", out var imgObj))
                         WindowBackgroundImagePath = imgObj?.ToString() ?? "";
                 }
-            }
-            catch
+            });
+        }
+
+        /// <summary>Führt das Lesen eines einzelnen Schlüssels aus; ein Fehler wird nur geloggt.</summary>
+        private static void ReadKey(string key, Action read)
+        {
+            try
             {
-                // Bei fehlerhafter Datei einfach die Standardwerte behalten,
-                // statt die App am Start scheitern zu lassen.
+                read();
             }
+            catch (Exception ex)
+            {
+                DebugLog.Write("AppSettings: Wert '" + key + "' konnte nicht gelesen werden - " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Wandelt einen JSON-Wert (Zahl oder Text wie "375,5" / "375.5") kulturunabhängig
+        /// in double um; NaN und Unendlich werden abgewiesen.
+        /// </summary>
+        private static bool TryToDouble(object raw, out double value)
+        {
+            value = 0;
+            if (raw == null || raw is bool) return false;
+
+            try
+            {
+                if (raw is string text)
+                {
+                    text = text.Trim().Replace(',', '.');
+                    if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+                        return false;
+                }
+                else
+                {
+                    value = Convert.ToDouble(raw, CultureInfo.InvariantCulture);
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+
+            return !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        private static bool ToBool(object raw)
+        {
+            if (raw is string text) return bool.Parse(text.Trim());
+            return Convert.ToBoolean(raw, CultureInfo.InvariantCulture);
         }
     }
 }

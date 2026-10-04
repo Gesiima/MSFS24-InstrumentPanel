@@ -2,6 +2,7 @@
 // Entstanden in Zusammenarbeit: Coding durch Claude (Anthropic), Anforderungen und Tests durch Gesiima.
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -41,6 +42,7 @@ namespace InstrumentPanel
         private bool _dragging;
         private double _dragStartX;
         private double _dragAccumulated;
+        private int _wheelAccumulated; // aufsummiertes Mausrad-Delta (120 = ein Rastschritt)
 
         public AltimeterGaugeControl()
         {
@@ -61,26 +63,37 @@ namespace InstrumentPanel
                 OnData);
         }
 
-        public void UpdateStatus(string text, Brush color)
+        /// <summary>
+        /// Modulo, das auch für negative Werte im Bereich 0..period liefert
+        /// (z.B. -200 ft bei 1000 ft/Umdrehung -> 800).
+        /// </summary>
+        private static double WrapModulo(double value, double period)
         {
-            // Verbindungsstatus wird zentral im Fenster (MainWindow) angezeigt.
+            return ((value % period) + period) % period;
         }
 
         private void OnData(AltimeterStruct data)
         {
-            double alt = Math.Max(0, data.Altitude);
+            // NaN/Infinity nie an die RotateTransform weiterreichen - Update überspringen.
+            if (double.IsNaN(data.Altitude) || double.IsInfinity(data.Altitude)
+                || double.IsNaN(data.QnhInHg) || double.IsInfinity(data.QnhInHg)
+                || double.IsNaN(data.QnhHpa) || double.IsInfinity(data.QnhHpa))
+                return;
+
+            // Negative Höhen (z.B. unter dem Meeresspiegel) laufen modulo-korrekt weiter.
+            double alt = data.Altitude;
 
             if (_hundredsRotation != null)
-                _hundredsRotation.Angle = (alt % 1000) / 1000.0 * 360.0;
+                _hundredsRotation.Angle = WrapModulo(alt, 1000) / 1000.0 * 360.0;
             if (_thousandsRotation != null)
-                _thousandsRotation.Angle = (alt % 10000) / 10000.0 * 360.0;
+                _thousandsRotation.Angle = WrapModulo(alt, 10000) / 10000.0 * 360.0;
             if (_tenThousandsRotation != null)
-                _tenThousandsRotation.Angle = (alt % 100000) / 100000.0 * 360.0;
+                _tenThousandsRotation.Angle = WrapModulo(alt, 100000) / 100000.0 * 360.0;
 
             if (_qnhInHgText != null)
-                _qnhInHgText.Text = data.QnhInHg.ToString("00.00");
+                _qnhInHgText.Text = data.QnhInHg.ToString("00.00", CultureInfo.InvariantCulture);
             if (_qnhHpaText != null)
-                _qnhHpaText.Text = Math.Round(data.QnhHpa).ToString("0000");
+                _qnhHpaText.Text = Math.Round(data.QnhHpa).ToString("0000", CultureInfo.InvariantCulture);
         }
 
         // ---------------------------------------------------------------
@@ -89,7 +102,22 @@ namespace InstrumentPanel
         // ---------------------------------------------------------------
         private void Knob_MouseWheel(object sender, MouseWheelEventArgs e)
         {
-            SendKnobStep(e.Delta > 0 ? 1 : -1);
+            // Delta akkumulieren: pro 120 (ein Rastschritt) genau ein Schritt, damit
+            // hochauflösende Mäuse/Touchpads nicht zu viele Schritte auslösen.
+            if (_wheelAccumulated != 0 && Math.Sign(_wheelAccumulated) != Math.Sign(e.Delta))
+                _wheelAccumulated = 0; // Richtungswechsel: Rest verwerfen
+            _wheelAccumulated += e.Delta;
+
+            while (_wheelAccumulated >= 120)
+            {
+                SendKnobStep(1);
+                _wheelAccumulated -= 120;
+            }
+            while (_wheelAccumulated <= -120)
+            {
+                SendKnobStep(-1);
+                _wheelAccumulated += 120;
+            }
             e.Handled = true;
         }
 
@@ -105,6 +133,7 @@ namespace InstrumentPanel
         private void Knob_MouseMove(object sender, MouseEventArgs e)
         {
             if (!_dragging) return;
+            if (e.LeftButton != MouseButtonState.Pressed) { _dragging = false; return; }
 
             double x = e.GetPosition(GaugeCanvas).X;
             double delta = x - _dragStartX; // nach rechts ziehen = positiv = erhöhen
@@ -127,6 +156,12 @@ namespace InstrumentPanel
         {
             _dragging = false;
             ((UIElement)sender).ReleaseMouseCapture();
+        }
+
+        private void Knob_LostMouseCapture(object sender, MouseEventArgs e)
+        {
+            // Mausaufnahme verloren (z.B. Fensterwechsel): Drag beenden, sonst hängt er fest.
+            _dragging = false;
         }
 
         private void SendKnobStep(int direction)
@@ -323,7 +358,7 @@ namespace InstrumentPanel
             Canvas.SetTop(centerCap, CenterY - 11);
             GaugeCanvas.Children.Add(centerCap);
 
-            // Drehknopf (Kollsman-Fenster-Einstellung): Außenkante des Knopfs auf halber
+            // Drehknopf (Kollsman-Fenster-Einstellung): Innenkante des Knopfs auf halber
             // Höhe der Umrandung (Bezel-Ring zwischen Zifferblatt-Rand 132 und
             // Gehäuse-Außenkante 150, Mitte davon = 141). So groß wie die Kugel beim
             // Turn Coordinator, +20%. Per Mausrad oder horizontalem Ziehen bedienbar.
@@ -386,6 +421,7 @@ namespace InstrumentPanel
             knobHitArea.MouseLeftButtonDown += Knob_MouseLeftButtonDown;
             knobHitArea.MouseMove += Knob_MouseMove;
             knobHitArea.MouseLeftButtonUp += Knob_MouseLeftButtonUp;
+            knobHitArea.LostMouseCapture += Knob_LostMouseCapture;
 
             GaugeCanvas.Children.Add(knobHitArea);
         }

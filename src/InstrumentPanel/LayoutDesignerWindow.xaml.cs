@@ -3,9 +3,12 @@
 using System;
 using System.Collections.Generic;
 using System.Collections;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -36,12 +39,31 @@ namespace InstrumentPanel
         };
 
         /// <summary>
-        /// Ein Knoten im Aufteilungs-Baum: entweder ein Blatt (IsLeaf=true, mit
-        /// einer zugewiesenen Anzeige) oder ein Split (in "SplitCount" gleich
-        /// große Kind-Flächen, gestapelt gemäß "Direction").
+        /// "Normal"-Gewicht eines Knotens innerhalb seiner Geschwister. 27720 =
+        /// kgV(1..12): dadurch sind die gekoppelten Breiten (NormalWeight * Referenz-
+        /// Zeilen / eigene Zeilen) für bis zu 12 Zeilen EXAKT ganzzahlig und müssen
+        /// nicht gerundet werden. Gespeichert wird ohnehin nur der gekürzte Bruch.
         /// </summary>
+        private const int NormalWeight = 27720;
+
+        /// <summary>Obergrenze der Teilflächen-Anzahl pro Aufteilen-Vorgang.</summary>
+        private const int MaxSplitCount = 24;
+
+        /// <summary>
+        /// Obergrenze für rowUnits/colUnits (kgV der Rastergrößen) beim Speichern -
+        /// MainWindow legt pro Einheit eine Grid-Zeile/-Spalte an, absurd große
+        /// Raster würden die Anzeige ausbremsen.
+        /// </summary>
+        private const int MaxGridUnits = 1000;
+
+        /// <summary>Richtung der Aufteilung eines Knotens im Baum.</summary>
         private enum SplitDirection { Rows, Columns }
 
+        /// <summary>
+        /// Ein Knoten im Aufteilungs-Baum: entweder ein Blatt (IsLeaf=true, mit
+        /// einer zugewiesenen Anzeige) oder ein Split (in mehrere Kind-Flächen,
+        /// gestapelt gemäß "Direction", gewichtet nach deren "Weight").
+        /// </summary>
         private class SplitNode
         {
             public bool IsLeaf = true;
@@ -51,18 +73,20 @@ namespace InstrumentPanel
 
             /// <summary>
             /// Relatives Gewicht dieses Knotens INNERHALB der Aufteilung seines
-            /// Elternteils (Standard 1 = gleich groß wie seine Geschwister). Ein
-            /// Gewicht von z.B. 2 bei Geschwistern mit Gewicht 3 ergibt ein
-            /// Größenverhältnis von 2:3 - damit lassen sich ungleich große
-            /// Teilflächen abbilden (z.B. eine 2/3-große Anzeige neben normalen).
+            /// Elternteils (Standard NormalWeight = gleich groß wie "normale"
+            /// Geschwister). Ein Gewicht von z.B. 2 bei Geschwistern mit Gewicht 3
+            /// ergibt ein Größenverhältnis von 2:3 - damit lassen sich ungleich
+            /// große Teilflächen abbilden (z.B. eine 2/3-große Anzeige neben
+            /// normalen).
             /// </summary>
-            public int Weight = 12; // 12 = "Normal" (Standard-Maßstab, siehe ApplyAutoWidth/BuildResetToNormalButton)
+            public int Weight = NormalWeight;
 
             /// <summary>
             /// Wenn true, wird Weight bei jeder Anzeige NEU aus der eigenen
-            /// Zeilenanzahl berechnet (siehe UpdateAutoWidth) - damit bleibt die
+            /// Zeilenanzahl berechnet (siehe RefreshAutoWidth) - damit bleibt die
             /// Breite automatisch im Einklang, auch wenn man später noch Zeilen
-            /// hinzufügt/entfernt. Nur sinnvoll bei Direction==Rows.
+            /// hinzufügt/entfernt. Nur sinnvoll bei Direction==Rows UNTER einer
+            /// Spalten-Aufteilung.
             /// </summary>
             public bool AutoWidth = false;
         }
@@ -73,6 +97,7 @@ namespace InstrumentPanel
             public long Num, Den;
             public Frac(long num, long den)
             {
+                if (den == 0) den = 1; // Schutz vor Division durch 0 (sollte nie vorkommen)
                 if (den < 0) { num = -num; den = -den; }
                 long g = Gcd(Math.Abs(num), den);
                 if (g == 0) g = 1;
@@ -82,7 +107,25 @@ namespace InstrumentPanel
             public static long Gcd(long a, long b) => b == 0 ? (a == 0 ? 1 : a) : Gcd(b, a % b);
             public static Frac operator +(Frac a, Frac b) => new Frac(a.Num * b.Den + b.Num * a.Den, a.Den * b.Den);
             public static Frac operator *(Frac a, long k) => new Frac(a.Num * k, a.Den);
-            public static Frac operator /(Frac a, long k) => new Frac(a.Num, a.Den * k);
+            public static Frac operator /(Frac a, long k) => new Frac(a.Num, a.Den * (k == 0 ? 1 : k));
+        }
+
+        /// <summary>Eine Zeile der Debug-Werte-Liste (Wert aktualisiert sich in-place per INotifyPropertyChanged).</summary>
+        private sealed class DebugValueRow : INotifyPropertyChanged
+        {
+            private string _value;
+            public string Name { get; set; }
+            public string Value
+            {
+                get { return _value; }
+                set
+                {
+                    if (_value == value) return;
+                    _value = value;
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Value)));
+                }
+            }
+            public event PropertyChangedEventHandler PropertyChanged;
         }
 
         private SplitNode _root = new SplitNode();
@@ -95,6 +138,18 @@ namespace InstrumentPanel
         private readonly Action _onSaved;
         private readonly Action<int> _onWindowDeleted;
 
+        /// <summary>true = der Baum wurde seit dem letzten Laden/Speichern verändert (ungespeicherte Änderungen).</summary>
+        private bool _dirty = false;
+
+        /// <summary>true = beim Einlesen musste eine Fläche vereinfacht werden (Zellen gehen beim Speichern verloren).</summary>
+        private bool _reconstructionIncomplete = false;
+
+        /// <summary>Eingabe in den "Aufteilen"-Feldern je Knoten und Richtung - überlebt dadurch ein Neuzeichnen des Baums.</summary>
+        private readonly Dictionary<(SplitNode, SplitDirection), string> _splitCountInputs = new Dictionary<(SplitNode, SplitDirection), string>();
+
+        private readonly ObservableCollection<DebugValueRow> _debugValueItems = new ObservableCollection<DebugValueRow>();
+        private readonly Dictionary<string, DebugValueRow> _debugValueRows = new Dictionary<string, DebugValueRow>();
+
         public LayoutDesignerWindow(string layoutPath, SimConnectService service, Action onSaved = null, Action<int> onWindowDeleted = null)
         {
             InitializeComponent();
@@ -104,10 +159,26 @@ namespace InstrumentPanel
             _service = service;
             _onSaved = onSaved;
             _onWindowDeleted = onWindowDeleted;
-            RefreshWindowButtons();
-            LoadWindow(0); // Fenster 0 (Standard) direkt beim Öffnen einlesen
-            LoadSettingsIntoUi();
 
+            // Der Konstruktor darf nie werfen (z.B. bei defekter layout.json/settings.json) -
+            // die Lade-Methoden sind bereits defensiv, das hier ist der doppelte Boden.
+            try
+            {
+                RefreshWindowButtons();
+                LoadWindow(0); // Fenster 0 (Standard) direkt beim Öffnen einlesen
+                LoadSettingsIntoUi();
+            }
+            catch (Exception ex)
+            {
+                ShowStatus("Fehler beim Initialisieren: " + ex.Message, Brushes.Salmon);
+            }
+
+            DebugValuesList.ItemsSource = _debugValueItems;
+            MainTabs.SelectionChanged += (s, e) =>
+            {
+                // SelectionChanged der inneren ComboBoxen blubbert hierher - nur den Reiterwechsel beachten.
+                if (ReferenceEquals(e.OriginalSource, MainTabs)) RefreshDebugValues();
+            };
             _debugValuesTimer.Interval = TimeSpan.FromSeconds(1);
             _debugValuesTimer.Tick += (s, e) => RefreshDebugValues();
             _debugValuesTimer.Start();
@@ -115,28 +186,162 @@ namespace InstrumentPanel
             RefreshDebugValues();
         }
 
-        private void ResetButton_Click(object sender, RoutedEventArgs e)
+        /// <summary>Fragt beim Schließen nach, wenn noch ungespeicherte Layout-Änderungen vorliegen.</summary>
+        protected override void OnClosing(CancelEventArgs e)
         {
-            _root = new SplitNode();
-            RedrawTree();
+            base.OnClosing(e);
+            if (!ConfirmLeaveWindow()) e.Cancel = true;
+        }
+
+        private void ShowStatus(string text, Brush color)
+        {
+            StatusText.Foreground = color;
+            StatusText.Text = text;
+        }
+
+        private void MarkDirty()
+        {
+            _dirty = true;
         }
 
         /// <summary>
-        /// Liest das 'windows'-Array roh aus layout.json (leere Liste, wenn Datei
-        /// oder Array fehlen) - Grundlage für die Fenster-Buttons-Übersicht.
+        /// Wird vor allem aufgerufen, was die aktuelle Bearbeitung verwirft
+        /// (Fensterwechsel, "+ Neues Fenster", Schließen). Ohne ungespeicherte
+        /// Änderungen sofort true. Sonst Ja = speichern (und bei Erfolg weiter),
+        /// Nein = Änderungen verwerfen, Abbrechen = false (nichts passiert).
         /// </summary>
-        private List<object> ReadWindowsArray()
+        private bool ConfirmLeaveWindow()
         {
+            if (!_dirty) return true;
+
+            var answer = MessageBox.Show(this,
+                "Fenster " + _currentWindowIndex + " hat ungespeicherte Änderungen.\n\n" +
+                "Ja = speichern\nNein = Änderungen verwerfen\nAbbrechen = hier bleiben",
+                "Ungespeicherte Änderungen", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+
+            if (answer == MessageBoxResult.Cancel) return false;
+            if (answer == MessageBoxResult.No)
+            {
+                _dirty = false;
+                return true;
+            }
+            return TrySaveLayout();
+        }
+
+        private void ResetButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_dirty)
+            {
+                var answer = MessageBox.Show(this,
+                    "Ungespeicherte Änderungen gehen dabei verloren. Fenster " + _currentWindowIndex + " trotzdem leeren?",
+                    "Fenster leeren", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (answer != MessageBoxResult.Yes) return;
+            }
+            _root = new SplitNode();
+            _splitCountInputs.Clear();
+            MarkDirty(); // leer weicht vom gespeicherten Stand ab
+            RedrawTree();
+        }
+
+        // -----------------------------------------------------------------
+        // Hilfen: JSON lesen/schreiben
+        // -----------------------------------------------------------------
+
+        /// <summary>
+        /// Liefert die Liste hinter einem JSON-Array (JavaScriptSerializer liefert
+        /// ArrayList, bei manchen Konstellationen object[]) - sonst null.
+        /// </summary>
+        private static IEnumerable AsList(object value)
+        {
+            if (value is ArrayList || value is object[]) return (IEnumerable)value;
+            return null;
+        }
+
+        /// <summary>Liest einen Integer-Wert tolerant aus einem JSON-Objekt (false bei fehlend/null/ungültig).</summary>
+        private static bool TryGetInt(Dictionary<string, object> dict, string key, out int value)
+        {
+            value = 0;
             try
             {
-                if (!File.Exists(_layoutPath)) return new List<object>();
+                if (dict != null && dict.TryGetValue(key, out var raw) && raw != null)
+                {
+                    value = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
+                    return true;
+                }
+            }
+            catch { /* ungültiger Wert - wie "nicht vorhanden" behandeln */ }
+            return false;
+        }
+
+        /// <summary>
+        /// Wandelt den Wert des 'windows'-Schlüssels in eine KOMPAKTE Liste von
+        /// Fenster-Objekten um: null-Einträge und Nicht-Objekte werden entfernt
+        /// (die App überspringt sie beim Laden ebenfalls) - so stimmen der Index
+        /// im Designer und der Fenster-Index in der App überein.
+        /// </summary>
+        private static List<Dictionary<string, object>> CompactWindows(object windowsObj, out int skippedEntries)
+        {
+            skippedEntries = 0;
+            var result = new List<Dictionary<string, object>>();
+            var list = AsList(windowsObj);
+            if (list == null)
+            {
+                if (windowsObj != null) skippedEntries = 1;
+                return result;
+            }
+            foreach (var entry in list)
+            {
+                if (entry is Dictionary<string, object> windowDict) result.Add(windowDict);
+                else skippedEntries++;
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Liest das 'windows'-Array aus layout.json (kompaktiert, siehe
+        /// CompactWindows). Leere Liste, wenn Datei oder Array fehlen. "problem"
+        /// enthält einen Hinweistext, wenn die Datei defekt war.
+        /// </summary>
+        private List<Dictionary<string, object>> ReadWindowsList(out string problem)
+        {
+            problem = null;
+            try
+            {
+                if (!File.Exists(_layoutPath)) return new List<Dictionary<string, object>>();
                 var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
                 var root = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(_layoutPath));
                 if (root != null && root.TryGetValue("windows", out var windowsObj))
-                    return ((ArrayList)windowsObj).Cast<object>().ToList();
+                {
+                    var windows = CompactWindows(windowsObj, out int skipped);
+                    if (skipped > 0) problem = skipped + " ungültige(r) Eintrag/Einträge im 'windows'-Array ignoriert.";
+                    return windows;
+                }
             }
-            catch { /* Übersicht ist rein informativ - bei Fehlern einfach leer anzeigen */ }
-            return new List<object>();
+            catch (Exception ex)
+            {
+                problem = "layout.json konnte nicht gelesen werden: " + ex.Message;
+            }
+            return new List<Dictionary<string, object>>();
+        }
+
+        /// <summary>
+        /// Schreibt eine Datei ATOMAR: erst in eine Temp-Datei im selben Ordner
+        /// (UTF-8 ohne BOM), dann per File.Replace/Move an ihren Platz - bei einem
+        /// Absturz mitten im Schreiben bleibt so die alte Datei heil.
+        /// </summary>
+        private static void WriteAllTextAtomic(string path, string content)
+        {
+            string tempPath = path + ".tmp";
+            try
+            {
+                File.WriteAllText(tempPath, content, new UTF8Encoding(false));
+                if (File.Exists(path)) File.Replace(tempPath, path, null);
+                else File.Move(tempPath, path);
+            }
+            finally
+            {
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* Aufräumen ist best-effort */ }
+            }
         }
 
         /// <summary>
@@ -146,7 +351,7 @@ namespace InstrumentPanel
         /// </summary>
         private void RefreshWindowButtons()
         {
-            var windows = ReadWindowsArray();
+            var windows = ReadWindowsList(out _);
             WindowButtonsPanel.Children.Clear();
 
             for (int i = 0; i < windows.Count; i++)
@@ -155,15 +360,25 @@ namespace InstrumentPanel
                 bool isSelected = index == _currentWindowIndex;
 
                 string gaugesSummary = "leer";
-                if (windows[i] is Dictionary<string, object> windowData && windowData.TryGetValue("cells", out var cellsObj))
+                try
                 {
-                    var names = ((ArrayList)cellsObj)
-                        .Cast<Dictionary<string, object>>()
-                        .Select(c => Convert.ToString(c["name"]))
-                        .Distinct()
-                        .ToList();
-                    if (names.Count > 0) gaugesSummary = string.Join(", ", names);
+                    if (windows[i].TryGetValue("cells", out var cellsObj))
+                    {
+                        var names = new List<string>();
+                        var cellList = AsList(cellsObj);
+                        if (cellList != null)
+                        {
+                            foreach (var cell in cellList)
+                            {
+                                if (cell is Dictionary<string, object> cellDict && cellDict.TryGetValue("name", out var nameObj) && nameObj != null)
+                                    names.Add(Convert.ToString(nameObj));
+                            }
+                        }
+                        names = names.Distinct().ToList();
+                        if (names.Count > 0) gaugesSummary = string.Join(", ", names);
+                    }
                 }
+                catch { /* Tooltip ist rein informativ */ }
 
                 var button = new Button
                 {
@@ -176,6 +391,7 @@ namespace InstrumentPanel
                 };
                 button.Click += (s, e) =>
                 {
+                    if (!ConfirmLeaveWindow()) return;
                     _currentWindowIndex = index;
                     LoadWindow(index);
                     RefreshWindowButtons();
@@ -194,8 +410,13 @@ namespace InstrumentPanel
             };
             addButton.Click += (s, e) =>
             {
-                _currentWindowIndex = windows.Count;
+                if (!ConfirmLeaveWindow()) return;
+                // Nach dem eventuellen Speichern in ConfirmLeaveWindow ist die Fensteranzahl ggf. größer - neu lesen.
+                int newIndex = ReadWindowsList(out _).Count;
+                _currentWindowIndex = newIndex;
                 _root = new SplitNode();
+                _splitCountInputs.Clear();
+                _dirty = false; // leeres neues Fenster: es gibt noch nichts zu speichern
                 RedrawTree();
                 RefreshWindowButtons();
             };
@@ -205,18 +426,18 @@ namespace InstrumentPanel
         /// <summary>
         /// Entfernt das aktuell ausgewählte Fenster KOMPLETT aus dem
         /// 'windows'-Array in layout.json (nicht nur leeren) und schließt es
-        /// sofort, falls es gerade offen ist.
+        /// sofort, falls es gerade offen ist (nach Rückfrage).
         /// </summary>
         private void DeleteWindowButton_Click(object sender, RoutedEventArgs e)
         {
             int windowIndex = _currentWindowIndex;
+            int remainingWindows;
 
             try
             {
                 if (!File.Exists(_layoutPath))
                 {
-                    StatusText.Foreground = Brushes.Salmon;
-                    StatusText.Text = "layout.json existiert nicht - nichts zu löschen.";
+                    ShowStatus("layout.json existiert nicht - nichts zu löschen.", Brushes.Salmon);
                     return;
                 }
 
@@ -226,37 +447,50 @@ namespace InstrumentPanel
 
                 if (!root.TryGetValue("windows", out var windowsObj))
                 {
-                    StatusText.Foreground = Brushes.Salmon;
-                    StatusText.Text = "Kein 'windows'-Array vorhanden - nichts zu löschen.";
+                    ShowStatus("Kein 'windows'-Array vorhanden - nichts zu löschen.", Brushes.Salmon);
                     return;
                 }
 
-                var windows = ((ArrayList)windowsObj).Cast<object>().ToList();
+                // Kompaktiert (null-Einträge raus), damit der Index mit dem der App übereinstimmt.
+                var windows = CompactWindows(windowsObj, out _).Cast<object>().ToList();
                 if (windowIndex >= windows.Count)
                 {
-                    StatusText.Foreground = Brushes.Salmon;
-                    StatusText.Text = "Fenster " + windowIndex + " existiert nicht.";
+                    ShowStatus("Fenster " + windowIndex + " existiert nicht.", Brushes.Salmon);
                     return;
                 }
+
+                var answer = MessageBox.Show(this,
+                    "Fenster " + windowIndex + " wirklich komplett löschen? Das lässt sich nicht rückgängig machen.",
+                    "Fenster löschen", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (answer != MessageBoxResult.Yes) return;
 
                 windows.RemoveAt(windowIndex);
                 root["windows"] = windows;
-                File.WriteAllText(_layoutPath, serializer.Serialize(root));
-
-                _onWindowDeleted?.Invoke(windowIndex); // schließt gezielt genau dieses Fenster, falls offen
-
-                _currentWindowIndex = Math.Max(0, Math.Min(_currentWindowIndex, windows.Count - 1));
-                RefreshWindowButtons();
-                LoadWindow(_currentWindowIndex);
-
-                StatusText.Foreground = Brushes.LightGreen;
-                StatusText.Text = "Fenster " + windowIndex + " gelöscht und geschlossen." +
-                    (windowIndex < windows.Count ? " Achtung: nachfolgende Fenster-Nummern sind nachgerückt." : "");
+                WriteAllTextAtomic(_layoutPath, serializer.Serialize(root));
+                remainingWindows = windows.Count;
             }
             catch (Exception ex)
             {
-                StatusText.Foreground = Brushes.Salmon;
-                StatusText.Text = "Fehler beim Löschen: " + ex.Message;
+                ShowStatus("Fehler beim Löschen: " + ex.Message, Brushes.Salmon);
+                return;
+            }
+
+            // Zuerst den EIGENEN Zustand vollständig aktualisieren - der Callback
+            // kann das Fenster schließen, aus dem das Setup geöffnet wurde (und damit
+            // auch dieses Setup-Fenster), danach soll nichts mehr auf der UI passieren müssen.
+            _currentWindowIndex = Math.Max(0, Math.Min(_currentWindowIndex, remainingWindows - 1));
+            RefreshWindowButtons();
+            LoadWindow(_currentWindowIndex); // setzt auch das Dirty-Flag zurück
+            ShowStatus("Fenster " + windowIndex + " gelöscht und geschlossen." +
+                (windowIndex < remainingWindows ? " Achtung: nachfolgende Fenster-Nummern sind nachgerückt." : ""), Brushes.LightGreen);
+
+            try
+            {
+                _onWindowDeleted?.Invoke(windowIndex); // schließt gezielt genau dieses Fenster, falls offen - als LETZTES
+            }
+            catch (Exception ex)
+            {
+                ShowStatus("Fenster " + windowIndex + " aus layout.json gelöscht, aber das Schließen in der App ist fehlgeschlagen: " + ex.Message, Brushes.Salmon);
             }
         }
 
@@ -265,72 +499,141 @@ namespace InstrumentPanel
         // -----------------------------------------------------------------
 
         /// <summary>
+        /// Liest die Zellen eines Fenster-Objekts defensiv ein: fehlende/ungültige
+        /// Zellen werden übersprungen (und gezählt), Spannen &lt; 1 auf 1 geklemmt,
+        /// ein fehlender Name wird zu "(leer)".
+        /// </summary>
+        private static List<(int Row, int Col, int RowSpan, int ColSpan, string Name)> ParseCells(
+            Dictionary<string, object> windowData, out int skippedCells)
+        {
+            skippedCells = 0;
+            var cells = new List<(int Row, int Col, int RowSpan, int ColSpan, string Name)>();
+            if (!windowData.TryGetValue("cells", out var cellsObj)) return cells;
+
+            var cellList = AsList(cellsObj);
+            if (cellList == null)
+            {
+                if (cellsObj != null) skippedCells = 1;
+                return cells;
+            }
+
+            foreach (var item in cellList)
+            {
+                var cellObj = item as Dictionary<string, object>;
+                if (cellObj == null || !TryGetInt(cellObj, "row", out int row) || !TryGetInt(cellObj, "col", out int col))
+                {
+                    skippedCells++;
+                    continue;
+                }
+
+                if (!TryGetInt(cellObj, "rowSpan", out int rowSpan)) rowSpan = 1;
+                if (!TryGetInt(cellObj, "colSpan", out int colSpan)) colSpan = 1;
+                if (rowSpan < 1) rowSpan = 1;
+                if (colSpan < 1) colSpan = 1;
+                if (row < 0) row = 0;
+                if (col < 0) col = 0;
+
+                string name = cellObj.TryGetValue("name", out var nameObj) && nameObj != null ? Convert.ToString(nameObj) : null;
+                if (string.IsNullOrEmpty(name)) name = "(leer)";
+
+                cells.Add((row, col, rowSpan, colSpan, name));
+            }
+            return cells;
+        }
+
+        /// <summary>
         /// Liest das Fenster an "index" aus layout.json ein und baut den
         /// Aufteilungs-Baum daraus wieder auf (best-effort - siehe
         /// BuildTreeFromCells). Existiert die Datei/das Fenster (noch) nicht,
-        /// wird eine leere Fläche angezeigt.
+        /// wird eine leere Fläche angezeigt. Wirft nie - Probleme erscheinen in
+        /// der Statuszeile.
         /// </summary>
         private void LoadWindow(int windowIndex)
         {
+            _dirty = false;
+            _reconstructionIncomplete = false;
+            _splitCountInputs.Clear();
+            _root = new SplitNode();
 
-            Dictionary<string, object> windowData = null;
+            var warnings = new List<string>();
+            string errorText = null;
             try
             {
-                if (File.Exists(_layoutPath))
+                var windows = ReadWindowsList(out string readProblem);
+                if (readProblem != null) warnings.Add(readProblem);
+
+                if (windowIndex >= 0 && windowIndex < windows.Count)
                 {
-                    var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
-                    var root = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(_layoutPath));
-                    if (root != null && root.TryGetValue("windows", out var windowsObj))
+                    var windowData = windows[windowIndex];
+                    var cells = ParseCells(windowData, out int skippedCells);
+                    if (skippedCells > 0)
+                        warnings.Add(skippedCells + " fehlerhafte Zelle(n) übersprungen - beim Speichern gehen sie verloren.");
+
+                    if (cells.Count > 0)
                     {
-                        var windowsList = (ArrayList)windowsObj;
-                        if (windowIndex < windowsList.Count)
-                            windowData = windowsList[windowIndex] as Dictionary<string, object>;
+                        int rowUnits = TryGetInt(windowData, "rowUnits", out int ru) && ru > 0 ? ru : cells.Max(c => c.Row + c.RowSpan);
+                        int colUnits = TryGetInt(windowData, "colUnits", out int cu) && cu > 0 ? cu : cells.Max(c => c.Col + c.ColSpan);
+
+                        _root = BuildTreeFromCells(cells, 0, 0, rowUnits, colUnits) ?? new SplitNode();
+                        DetectAutoWidthFlags(_root);
+                        NormalizeWeightScales(_root);
                     }
                 }
             }
             catch (Exception ex)
             {
-                if (StatusText != null)
-                {
-                    StatusText.Foreground = Brushes.Salmon;
-                    StatusText.Text = "Fehler beim Einlesen: " + ex.Message;
-                }
-            }
-
-            if (windowData == null || !windowData.TryGetValue("cells", out var cellsObj))
-            {
                 _root = new SplitNode();
-                RedrawTree();
-                return;
+                errorText = "Fehler beim Einlesen: " + ex.Message;
             }
 
-            var cells = new List<(int Row, int Col, int RowSpan, int ColSpan, string Name)>();
-            foreach (Dictionary<string, object> cellObj in (ArrayList)cellsObj)
-            {
-                cells.Add((
-                    Convert.ToInt32(cellObj["row"]),
-                    Convert.ToInt32(cellObj["col"]),
-                    cellObj.TryGetValue("rowSpan", out var rs) ? Convert.ToInt32(rs) : 1,
-                    cellObj.TryGetValue("colSpan", out var cs) ? Convert.ToInt32(cs) : 1,
-                    Convert.ToString(cellObj["name"])));
-            }
+            if (_reconstructionIncomplete)
+                warnings.Add("Achtung: Diese Fläche war nicht vollständig als Aufteilung darstellbar (von Hand editiertes Layout?) - beim Speichern gehen dabei Zellen verloren.");
 
-            int rowUnits = windowData.TryGetValue("rowUnits", out var ru) ? Convert.ToInt32(ru) : cells.Max(c => c.Row + c.RowSpan);
-            int colUnits = windowData.TryGetValue("colUnits", out var cu) ? Convert.ToInt32(cu) : cells.Max(c => c.Col + c.ColSpan);
-
-            _root = BuildTreeFromCells(cells, 0, 0, rowUnits, colUnits) ?? new SplitNode();
-            DetectAutoWidthFlags(_root);
             RedrawTree();
+
+            if (errorText != null) ShowStatus(errorText, Brushes.Salmon);
+            else if (warnings.Count > 0) ShowStatus(string.Join(" ", warnings), Brushes.Orange);
+        }
+
+        /// <summary>
+        /// Effektive "Zeilenanzahl" eines Knotens für den Breite-koppeln-Vergleich:
+        /// bei einer Zeilen-Aufteilung Summe/kleinstes Kind-Gewicht (= wie viele
+        /// "normale" Zeilen hineinpassen, bei gleich großen Zeilen schlicht die
+        /// Kinderanzahl), sonst (Blatt oder Spalten-Aufteilung) 1.
+        /// </summary>
+        private static double GetEffectiveRowCount(SplitNode s)
+        {
+            if (s.IsLeaf || s.Direction != SplitDirection.Rows || s.Children.Count == 0) return 1.0;
+            long total = s.Children.Sum(c => (long)c.Weight);
+            long min = s.Children.Min(c => c.Weight);
+            return min <= 0 ? s.Children.Count : (double)total / min;
+        }
+
+        /// <summary>
+        /// Gemeinsame Referenz-Zeilenanzahl für die Kopplung einer Geschwister-
+        /// Gruppe: das Minimum unter den NICHT gekoppelten Geschwistern (die sind
+        /// per Definition "Normalbreite") - gibt es keine, das Minimum über ALLE
+        /// Geschwister inkl. des Knotens selbst. Dadurch ist das Ergebnis für alle
+        /// gekoppelten Geschwister dieselbe Referenz (z.B. 4 vs. 3 Zeilen = 3:4).
+        /// </summary>
+        private static double ComputeReferenceRows(SplitNode node, List<SplitNode> siblings)
+        {
+            var referenceSet = siblings.Where(s => s != node && !s.AutoWidth).ToList();
+            if (referenceSet.Count == 0) referenceSet = siblings.ToList();
+            if (referenceSet.Count == 0) return GetEffectiveRowCount(node);
+            return referenceSet.Min(GetEffectiveRowCount);
         }
 
         /// <summary>
         /// Läuft nach dem Einlesen einmal durch den ganzen Baum und markiert
-        /// jede Zeilen-Aufteilung als "an Zeilen gekoppelt" (AutoWidth), deren
-        /// aktuelle Breite GENAU dem entspricht, was die Kopplung berechnen
-        /// würde - layout.json speichert nur das fertige Ergebnis, nicht ob es
-        /// über die Kopplung entstanden ist, daher diese Erkennung anhand des
-        /// Zahlenwerts. Ohne das würde der Umschalter nach jedem Neuladen immer
-        /// als "aus" erscheinen, obwohl die Breite vorher gekoppelt war.
+        /// Zeilen-Aufteilungen unter Spalten-Aufteilungen als "an Zeilen
+        /// gekoppelt" (AutoWidth), deren aktuelle Breite GENAU dem entspricht, was
+        /// die Kopplung berechnen würde - layout.json speichert nur das fertige
+        /// Ergebnis, nicht ob es über die Kopplung entstanden ist, daher diese
+        /// Erkennung anhand des Zahlenwerts. Markiert wird NUR, wenn die Fläche
+        /// mehr Zeilen hat als die Referenz-Geschwister (Breite weicht also von
+        /// der Normalbreite ab) - sonst würden z.B. 3 gleich breite Spalten mit je
+        /// 3 Zeilen fälschlich als "gekoppelt" gelten.
         /// </summary>
         private void DetectAutoWidthFlags(SplitNode node)
         {
@@ -338,36 +641,60 @@ namespace InstrumentPanel
             foreach (var child in node.Children)
                 DetectAutoWidthFlags(child);
 
-            if (node.Direction != SplitDirection.Columns) return;
+            if (node.Direction != SplitDirection.Columns || node.Children.Count == 0) return;
+
+            // Referenz: Geschwister mit der kleinsten effektiven Zeilenanzahl (Normalbreite);
+            // bei mehreren davon das mit dem größten Gewicht (wie bisher bei Gleichstand).
+            double minRows = node.Children.Min(GetEffectiveRowCount);
+            var referenceSibling = node.Children
+                .Where(c => GetEffectiveRowCount(c) <= minRows + 1e-9)
+                .OrderByDescending(c => c.Weight).First();
+
+            // Erst ALLE prüfen, dann Flags setzen - sonst würde das Setzen die Prüfung der Nächsten beeinflussen.
+            var toMark = new List<SplitNode>();
             foreach (var child in node.Children)
             {
-                if (child.IsLeaf || child.Direction != SplitDirection.Rows) continue;
-                if (MatchesAutoWidth(child, node.Children))
-                    child.AutoWidth = true;
+                if (child.IsLeaf || child.Direction != SplitDirection.Rows || child.Children.Count == 0) continue;
+                double rows = GetEffectiveRowCount(child);
+                if (rows <= minRows + 1e-9) continue; // Normalbreite - nichts zu koppeln
+                double expectedRatio = minRows / rows;
+                double actualRatio = (double)child.Weight / referenceSibling.Weight;
+                if (Math.Abs(actualRatio - expectedRatio) <= 0.01 * expectedRatio)
+                    toMark.Add(child);
             }
+            foreach (var child in toMark) child.AutoWidth = true;
         }
 
         /// <summary>
-        /// Prüft (ohne etwas zu verändern), ob node's aktuelles Gewicht dem
-        /// entspricht, was BuildAutoWidthToggle/ApplyAutoWidth berechnen würde -
-        /// Grundlage für DetectAutoWidthFlags.
+        /// Rechnet nach dem Einlesen die (beim Speichern gekürzten) Gewichte jeder
+        /// Geschwister-Gruppe auf den gemeinsamen Maßstab NormalWeight um. Nur so
+        /// passen die danach neu berechneten gekoppelten Breiten (RefreshAutoWidth,
+        /// feste Skala) zu den übrigen Geschwistern - das Verhältnis bleibt
+        /// dabei unverändert (z.B. 2:3:3 bleibt 2:3:3, nur auf größerer Skala).
         /// </summary>
-        private bool MatchesAutoWidth(SplitNode node, List<SplitNode> siblings)
+        private void NormalizeWeightScales(SplitNode node)
         {
-            long ownRowUnits = node.Children.Sum(c => c.Weight);
-            long normalRowWeight = node.Children.Min(c => c.Weight);
-            double ownRowHeight = (double)normalRowWeight / ownRowUnits;
+            if (node.IsLeaf) return;
+            foreach (var child in node.Children)
+                NormalizeWeightScales(child);
+            NormalizeSiblingWeights(node.Children, null);
+        }
 
-            var otherSiblings = siblings.Where(sib => sib != node).ToList();
-            int referenceRowCount = otherSiblings.Count == 0 ? 1 : otherSiblings.Select(GetRowCount).Min();
-            double normalRowHeight = 1.0 / referenceRowCount;
-            double expectedRatio = ownRowHeight / normalRowHeight;
-
+        /// <summary>
+        /// Skaliert die Gewichte aller Geschwister (außer "except") so, dass die
+        /// Baseline (siehe ComputeBaselineWeight) genau NormalWeight entspricht.
+        /// </summary>
+        private static void NormalizeSiblingWeights(List<SplitNode> siblings, SplitNode except)
+        {
+            if (siblings.Count == 0) return;
             int baselineWeight = ComputeBaselineWeight(siblings);
-            if (baselineWeight <= 0) return false;
-            double actualRatio = (double)node.Weight / baselineWeight;
-
-            return Math.Abs(expectedRatio - actualRatio) < 0.05;
+            if (baselineWeight <= 0) return;
+            double scale = (double)NormalWeight / baselineWeight;
+            foreach (var sibling in siblings)
+            {
+                if (sibling == except) continue;
+                sibling.Weight = Math.Max(1, (int)Math.Round(sibling.Weight * scale));
+            }
         }
 
         /// <summary>
@@ -379,7 +706,8 @@ namespace InstrumentPanel
         /// exotisch nachgebildet - in dem seltenen Fall wird die größte
         /// Einzelzelle als Blatt übernommen (kein Absturz, aber ggf. Datenverlust
         /// für diese eine Fläche - betrifft nur von Hand exotisch editierte
-        /// Layouts, nie etwas, das dieser Designer selbst erzeugt hat).
+        /// Layouts, nie etwas, das dieser Designer selbst erzeugt hat; die
+        /// Statuszeile warnt dann, siehe _reconstructionIncomplete).
         /// </summary>
         private SplitNode BuildTreeFromCells(List<(int Row, int Col, int RowSpan, int ColSpan, string Name)> cells,
             int row, int col, int rowSpan, int colSpan)
@@ -418,6 +746,7 @@ namespace InstrumentPanel
             // Kein sauberer Guillotine-Schnitt gefunden (exotisches, von Hand
             // editiertes Muster) - größte Einzelzelle als Blatt übernehmen,
             // damit wenigstens etwas Sinnvolles angezeigt wird.
+            _reconstructionIncomplete = true;
             var largest = relevant.OrderByDescending(c => (long)c.RowSpan * c.ColSpan).First();
             return new SplitNode { IsLeaf = true, GaugeName = largest.Name };
         }
@@ -551,14 +880,16 @@ namespace InstrumentPanel
         /// <summary>
         /// Wandelt eine Liste absoluter Bandgrößen in die kleinstmöglichen
         /// ganzzahligen Gewichte um (z.B. [2,3,3] -> [2,3,3], [4,6,6] -> [2,3,3]) -
-        /// per größtem gemeinsamen Teiler.
+        /// per größtem gemeinsamen Teiler. Größen &lt;= 0 werden auf 1 geklemmt
+        /// (keine Division durch 0).
         /// </summary>
         private static List<int> SimplifyToWeights(List<int> sizes)
         {
-            long g = sizes[0];
-            foreach (var s in sizes.Skip(1)) g = Frac.Gcd(g, s);
-            if (g == 0) g = 1;
-            return sizes.Select(s => (int)(s / g)).ToList();
+            var safeSizes = sizes.Select(s => Math.Max(1, s)).ToList();
+            long g = safeSizes[0];
+            foreach (var s in safeSizes.Skip(1)) g = Frac.Gcd(g, s);
+            if (g <= 0) g = 1;
+            return safeSizes.Select(s => (int)(s / g)).ToList();
         }
 
         // -----------------------------------------------------------------
@@ -575,6 +906,10 @@ namespace InstrumentPanel
             SlotsGrid.RowDefinitions.Add(new RowDefinition());
             SlotsGrid.ColumnDefinitions.Add(new ColumnDefinition());
 
+            // Gekoppelte Breiten VOR der Flächenberechnung aktualisieren, damit die
+            // Prozentangaben zur tatsächlich gezeichneten Aufteilung passen.
+            RefreshAutoWidthsInTree(_root);
+
             // Größte Anzeige im ganzen Baum ermitteln (per Fläche) - Bezugsgröße
             // für den Prozent-Vergleich "X% der größten Anzeige" an jeder Fläche,
             // damit z.B. 4 gleich große Anzeigen in einem 2x2-Raster nicht nur
@@ -585,25 +920,44 @@ namespace InstrumentPanel
             _maxLeafArea = leaves.Count == 0 ? 1.0 : leaves.Max(l => ((double)l.W.Num / l.W.Den) * ((double)l.H.Num / l.H.Den));
             if (_maxLeafArea <= 0) _maxLeafArea = 1.0;
 
-            // Für den Wurzelknoten gibt es keine Geschwister - "eigene Größe" ist
-            // dort bedeutungslos (füllt immer 100%). -1 signalisiert das, damit
-            // BuildNodeVisual dort gar keine Größen-Auswahl anzeigt. Breite/Höhe
+            // Für den Wurzelknoten gibt es keine Geschwister (siblings = null) -
+            // "eigene Größe" ist dort bedeutungslos (füllt immer 100%), daher zeigt
+            // BuildNodeVisual dort gar keine Größen-Auswahl an. Breite/Höhe
             // starten bei 1/1 (volles Fenster) und werden beim Runterreichen durch
             // den Baum entsprechend verkleinert - daraus berechnet sich die an
             // jeder Anzeige gezeigte tatsächliche Endgröße.
-            var visual = BuildNodeVisual(_root, null, new Frac(1, 1), new Frac(1, 1));
+            var visual = BuildNodeVisual(_root, null, false, new Frac(1, 1), new Frac(1, 1));
             Grid.SetRow(visual, 0);
             Grid.SetColumn(visual, 0);
             SlotsGrid.Children.Add(visual);
         }
 
         /// <summary>
+        /// Berechnet rekursiv für den ganzen Baum die Breiten aller gekoppelten
+        /// (AutoWidth) Flächen neu - so bleibt die Breite korrekt, auch wenn sich
+        /// die eigene Zeilenanzahl seit dem Einschalten geändert hat, ohne dass
+        /// der Umschalter erneut betätigt werden muss.
+        /// </summary>
+        private void RefreshAutoWidthsInTree(SplitNode node)
+        {
+            if (node.IsLeaf) return;
+            if (node.Direction == SplitDirection.Columns)
+            {
+                foreach (var child in node.Children)
+                    if (child.AutoWidth && !child.IsLeaf && child.Direction == SplitDirection.Rows)
+                        RefreshAutoWidth(child, node.Children);
+            }
+            foreach (var child in node.Children)
+                RefreshAutoWidthsInTree(child);
+        }
+
+        /// <summary>
         /// Ermittelt den "Normal"-Bezugswert unter Geschwister-Gewichten: den
         /// häufigsten Wert (bei Gleichstand den größten) - relativ dazu wird die
-        /// Größen-Auswahl (Normal/2/3/...) jeder Fläche angezeigt. Wichtig, weil
-        /// gespeicherte Gewichte beim Schreiben auf den kleinstmöglichen Bruch
-        /// gekürzt werden (z.B. 8:12 -> 2:3) - der Bezug zu "was ist normal" muss
-        /// also aus den GESCHWISTERN abgeleitet werden, nicht aus einer festen Zahl.
+        /// Größe jeder Fläche verstanden. Wichtig, weil gespeicherte Gewichte beim
+        /// Schreiben auf den kleinstmöglichen Bruch gekürzt werden (z.B. 8:12 ->
+        /// 2:3) - der Bezug zu "was ist normal" muss also aus den GESCHWISTERN
+        /// abgeleitet werden, nicht aus einer festen Zahl.
         /// </summary>
         private static int ComputeBaselineWeight(List<SplitNode> siblings)
         {
@@ -639,12 +993,12 @@ namespace InstrumentPanel
         /// Aufteilen-Knöpfen und der TATSÄCHLICHEN Endgröße (Breite/Höhe als
         /// Bruch vom Gesamtfenster - das beantwortet direkt "wie groß wird das
         /// wirklich", ohne dass man den Baum im Kopf durchrechnen muss).
-        /// baselineWeight ist der "Normal"-Bezugswert unter den GESCHWISTERN
-        /// dieses Knotens (siehe ComputeBaselineWeight) - für die Größen-Auswahl
-        /// dieses Knotens selbst. widthFrac/heightFrac sind die vom Wurzelknoten
-        /// bis hierhin akkumulierten Anteile der Gesamtbreite/-höhe.
+        /// siblings sind die Geschwister dieses Knotens (null beim Wurzelknoten),
+        /// parentIsColumns sagt, ob der Elternknoten eine Spalten-Aufteilung ist
+        /// (nur dann ist "Breite koppeln" sinnvoll). widthFrac/heightFrac sind die
+        /// vom Wurzelknoten bis hierhin akkumulierten Anteile der Gesamtbreite/-höhe.
         /// </summary>
-        private UIElement BuildNodeVisual(SplitNode node, List<SplitNode> siblings, Frac widthFrac, Frac heightFrac)
+        private UIElement BuildNodeVisual(SplitNode node, List<SplitNode> siblings, bool parentIsColumns, Frac widthFrac, Frac heightFrac)
         {
             if (!node.IsLeaf)
             {
@@ -660,8 +1014,10 @@ namespace InstrumentPanel
                 var headerPanel = new StackPanel { Orientation = Orientation.Horizontal };
                 headerPanel.Children.Add(new TextBlock { Text = headerText, Foreground = Brushes.LightGray, FontSize = 10, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) });
                 var headerButtonsStack = new StackPanel { Orientation = Orientation.Vertical };
-                if (siblings != null && node.Direction == SplitDirection.Rows)
-                    headerButtonsStack.Children.Add(BuildAutoWidthToggle(node, siblings)); // Hauptweg für unterschiedliche Größen: koppelt die Breite an die eigene Zeilenanzahl
+                // Hauptweg für unterschiedliche Größen: koppelt die Breite an die eigene
+                // Zeilenanzahl - nur sinnvoll für eine Zeilen-Aufteilung unter einer Spalten-Aufteilung.
+                if (siblings != null && parentIsColumns && node.Direction == SplitDirection.Rows)
+                    headerButtonsStack.Children.Add(BuildAutoWidthToggle(node, siblings));
                 var mergeButton = new Button
                 {
                     Content = "⊟ Zusammenführen",
@@ -677,6 +1033,8 @@ namespace InstrumentPanel
                     node.IsLeaf = true;
                     node.GaugeName = keepName;
                     node.Children = new List<SplitNode>();
+                    node.AutoWidth = false; // eine zusammengeführte Fläche hat keine Zeilen mehr, an die sich koppeln ließe
+                    MarkDirty();
                     RedrawTree();
                 };
                 var addChildButton = new Button
@@ -691,11 +1049,11 @@ namespace InstrumentPanel
                 addChildButton.Click += (s, e) =>
                 {
                     // Neues Kind bekommt das gleiche Gewicht wie die bestehenden
-                    // Geschwister (nicht den Standardwert 12) - sonst würde es bei
-                    // z.B. gleich großen 1er-Gewichten (nach dem Kürzen beim
-                    // Speichern) alle anderen komplett dominieren.
-                    int matchingWeight = node.Children.Count > 0 ? ComputeBaselineWeight(node.Children) : 12;
+                    // Geschwister (nicht blind den Standardwert) - sonst würde es bei
+                    // z.B. anders skalierten Gewichten alle anderen komplett dominieren.
+                    int matchingWeight = node.Children.Count > 0 ? ComputeBaselineWeight(node.Children) : NormalWeight;
                     node.Children.Add(new SplitNode { Weight = matchingWeight });
+                    MarkDirty();
                     RedrawTree();
                 };
                 headerButtonsStack.Children.Add(addChildButton);
@@ -708,17 +1066,7 @@ namespace InstrumentPanel
                 var childrenGrid = new Grid();
                 int n = node.Children.Count;
 
-                // Automatisch gekoppelte Breiten (siehe BuildAutoWidthToggle) vor
-                // dem Zeichnen neu berechnen - so bleibt die Breite korrekt, auch
-                // wenn sich die eigene Zeilenanzahl seit dem Einschalten geändert
-                // hat, ohne dass der Umschalter erneut betätigt werden muss.
-                if (node.Direction == SplitDirection.Columns)
-                {
-                    foreach (var child in node.Children)
-                        if (child.AutoWidth && !child.IsLeaf && child.Direction == SplitDirection.Rows)
-                            RefreshAutoWidth(child, node.Children);
-                }
-
+                // (Gekoppelte Breiten wurden bereits in RedrawTree aktualisiert.)
                 for (int i = 0; i < n; i++)
                 {
                     var star = new GridLength(node.Children[i].Weight, GridUnitType.Star);
@@ -727,7 +1075,8 @@ namespace InstrumentPanel
                     else
                         childrenGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = star });
                 }
-                long totalWeight = node.Children.Sum(c => c.Weight);
+                long totalWeight = node.Children.Sum(c => (long)c.Weight);
+                if (totalWeight <= 0) totalWeight = 1;
                 for (int i = 0; i < n; i++)
                 {
                     Frac childWidth = widthFrac;
@@ -738,7 +1087,7 @@ namespace InstrumentPanel
                     else
                         childWidth = widthFrac * childShare.Num / childShare.Den;
 
-                    var childVisual = BuildNodeVisual(node.Children[i], node.Children, childWidth, childHeight);
+                    var childVisual = BuildNodeVisual(node.Children[i], node.Children, node.Direction == SplitDirection.Columns, childWidth, childHeight);
                     if (node.Direction == SplitDirection.Rows)
                     {
                         Grid.SetRow(childVisual, i);
@@ -781,6 +1130,7 @@ namespace InstrumentPanel
             gaugeBox.SelectionChanged += (s, e) =>
             {
                 node.GaugeName = (string)gaugeBox.SelectedItem;
+                MarkDirty();
                 RedrawTree(); // Farbe (leer/belegt) aktualisieren
             };
             stack.Children.Add(gaugeBox);
@@ -822,67 +1172,39 @@ namespace InstrumentPanel
         }
 
         /// <summary>
-        /// Berechnet die passende Breite (Weight relativ zu siblings), damit die
-        /// Zellen dieser Fläche quadratisch bleiben - basierend auf der eigenen
-        /// Zeilenanzahl im Vergleich zu einer "normalen" Geschwister-Spalte.
-        /// Setzt sie DIREKT auf node.Weight, rechnet die übrigen siblings zuvor
-        /// auf unseren Standard-Maßstab (Normal=12) um.
-        /// </summary>
-        /// <summary>
-        /// Eigene "Zeilenanzahl" eines Knotens für den Breite-koppeln-Vergleich:
-        /// bei einer Zeilen-Aufteilung die Anzahl ihrer Kinder, sonst (Blatt oder
-        /// Spalten-Aufteilung) 1 - eine unaufgeteilte Fläche gilt also als "1 Zeile".
-        /// </summary>
-        private static int GetRowCount(SplitNode s) =>
-            (!s.IsLeaf && s.Direction == SplitDirection.Rows) ? s.Children.Count : 1;
-
-        /// <summary>
         /// Berechnet NUR node's eigenes Gewicht neu (relativ zur festen
-        /// "Normal=12"-Referenz), OHNE die Geschwister anzufassen. Wird bei
+        /// NormalWeight-Referenz), OHNE die Geschwister anzufassen. Wird bei
         /// JEDEM Neuzeichnen für automatisch gekoppelte Flächen aufgerufen
-        /// (siehe BuildNodeVisual) - deshalb DARF das die Geschwister nicht
-        /// jedes Mal neu skalieren, sonst schaukelt sich das mit jeder weiteren
-        /// Interaktion immer weiter hoch (siehe ApplyAutoWidth für den
+        /// (siehe RefreshAutoWidthsInTree) - deshalb DARF das die Geschwister
+        /// nicht jedes Mal neu skalieren, sonst schaukelt sich das mit jeder
+        /// weiteren Interaktion immer weiter hoch (siehe ApplyAutoWidth für den
         /// einmaligen Normalisierungs-Schritt beim Einschalten).
         /// </summary>
         private void RefreshAutoWidth(SplitNode node, List<SplitNode> siblings)
         {
-            long ownRowUnits = node.Children.Sum(c => c.Weight);
-            long normalRowWeight = node.Children.Min(c => c.Weight); // eine "normale" eigene Zeile
-            double ownRowHeight = (double)normalRowWeight / ownRowUnits;
+            if (node.Children.Count == 0) return;
 
-            // Referenz = KLEINSTE Zeilenanzahl unter den ÜBRIGEN Geschwistern -
-            // also die am WENIGSTEN unterteilte Fläche (im Extremfall unaufgeteilt
-            // = 1 Zeile), NICHT die häufigste. Eine unaufgeteilte volle Anzeige
-            // ist die eigentliche "voll"-Referenz, an der sich MainWindow beim
-            // Berechnen der Fenstergröße orientiert (größter rowSpan) - auch wenn
-            // ZUFÄLLIG mehrere andere Geschwister ebenfalls z.B. 2-zeilig sind,
-            // bleibt die unaufgeteilte Fläche die richtige Referenz für "Normal".
-            var otherSiblings = siblings.Where(sib => sib != node).ToList();
-            int referenceRowCount = otherSiblings.Count == 0 ? 1 : otherSiblings.Select(GetRowCount).Min();
-            double normalRowHeight = 1.0 / referenceRowCount;
-
-            double ratio = ownRowHeight / normalRowHeight;
-            node.Weight = Math.Max(1, (int)Math.Round(12.0 * ratio));
+            // Referenz = gemeinsames Minimum der Zeilenanzahl (siehe
+            // ComputeReferenceRows): die am WENIGSTEN unterteilte Fläche ist die
+            // eigentliche "voll"-Referenz, an der sich MainWindow beim Berechnen der
+            // Fenstergröße orientiert (größter rowSpan) - und für alle gekoppelten
+            // Geschwister dieselbe, damit z.B. 4 vs. 3 Zeilen sauber 3:4 ergibt.
+            double referenceRows = ComputeReferenceRows(node, siblings);
+            double ratio = referenceRows / GetEffectiveRowCount(node);
+            node.Weight = Math.Max(1, (int)Math.Round(NormalWeight * ratio));
         }
 
         /// <summary>
         /// EINMALIGER Schritt beim Einschalten von "Breite koppeln": normalisiert
-        /// zuerst die Geschwister-Gruppe auf unseren Standard-Maßstab (Normal=12)
-        /// - das ist bewusst NUR hier (beim expliziten Einschalten durch den
-        /// Nutzer), NICHT bei jedem automatischen Neuberechnen (RefreshAutoWidth),
-        /// da sonst jede weitere Interaktion die Geschwister immer weiter
-        /// hochskalieren würde (Aufschaukel-Effekt).
+        /// zuerst die Geschwister-Gruppe auf unseren Standard-Maßstab
+        /// (NormalWeight) - das ist bewusst NUR hier (beim expliziten Einschalten
+        /// durch den Nutzer), NICHT bei jedem automatischen Neuberechnen
+        /// (RefreshAutoWidth), da sonst jede weitere Interaktion die Geschwister
+        /// immer weiter hochskalieren würde (Aufschaukel-Effekt).
         /// </summary>
         private void ApplyAutoWidth(SplitNode node, List<SplitNode> siblings)
         {
-            int baselineWeight = ComputeBaselineWeight(siblings);
-            double scale = 12.0 / baselineWeight;
-            foreach (var sibling in siblings)
-            {
-                if (sibling == node) continue;
-                sibling.Weight = Math.Max(1, (int)Math.Round(sibling.Weight * scale));
-            }
+            NormalizeSiblingWeights(siblings, node);
             RefreshAutoWidth(node, siblings);
         }
 
@@ -891,8 +1213,9 @@ namespace InstrumentPanel
         /// Breite dieser Fläche an ihre eigene Zeilenanzahl (AN) oder löst die
         /// Kopplung wieder (AUS, zurück auf "Normal"). Im AN-Zustand wird die
         /// Breite bei jeder Änderung automatisch neu berechnet (siehe
-        /// BuildNodeVisual) - ändert man später die Zeilenanzahl, passt sich die
-        /// Breite von selbst mit an, ohne den Knopf erneut betätigen zu müssen.
+        /// RefreshAutoWidthsInTree) - ändert man später die Zeilenanzahl, passt
+        /// sich die Breite von selbst mit an, ohne den Knopf erneut betätigen zu
+        /// müssen.
         /// </summary>
         private UIElement BuildAutoWidthToggle(SplitNode node, List<SplitNode> siblings)
         {
@@ -909,6 +1232,7 @@ namespace InstrumentPanel
             {
                 node.AutoWidth = true;
                 ApplyAutoWidth(node, siblings);
+                MarkDirty();
                 RedrawTree();
             };
             toggle.Unchecked += (s, e) =>
@@ -916,33 +1240,19 @@ namespace InstrumentPanel
                 // Reihenfolge wichtig: Baseline/Rescale BEVOR AutoWidth auf false
                 // gesetzt wird - sonst würde der eigene (noch veraltete) Gewichts-
                 // wert die Berechnung mit verfälschen (siehe ComputeBaselineWeight).
-                int baselineWeight = ComputeBaselineWeight(siblings);
-                double scale = 12.0 / baselineWeight;
-                foreach (var sibling in siblings)
-                {
-                    if (sibling == node) continue;
-                    sibling.Weight = Math.Max(1, (int)Math.Round(sibling.Weight * scale));
-                }
+                NormalizeSiblingWeights(siblings, node);
                 node.AutoWidth = false;
-                node.Weight = 12; // zurück auf "Normal"
+                node.Weight = NormalWeight; // zurück auf "Normal"
+                MarkDirty();
                 RedrawTree();
             };
             return toggle;
         }
 
         /// <summary>
-        /// Verpackt die manuelle Größen-Auswahl in einen eingeklappten
-        /// "Erweitert"-Bereich - das ist der SELTENERE Sonderfall (bewusst NICHT
-        /// quadratisch, oder eine Größe, die sich nicht aus einer Zeilenanzahl
-        /// ergibt). Für den Regelfall (Seitenverhältnis erhalten) gibt es den
-        /// direkt sichtbaren "🔗 Breite an Zeilen koppeln"-Umschalter - das hält
-        /// die Oberfläche im Regelfall aufgeräumt.
-        /// </summary>
-        /// <summary>
         /// Setzt diese Fläche wieder auf "Normal" zurück (Verhältnis 1:1 zu den
-        /// Geschwistern) - die naheliegende Art,
-        /// eine vorherige Quadratisch- oder manuelle Größen-Änderung rückgängig
-        /// zu machen, ohne die "Erweitert"-Auswahl von Hand suchen zu müssen.
+        /// Geschwistern) - die naheliegende Art, eine vorherige Kopplung oder
+        /// manuelle Größen-Änderung rückgängig zu machen.
         /// </summary>
         private UIElement BuildResetToNormalButton(SplitNode node, List<SplitNode> siblings)
         {
@@ -952,18 +1262,13 @@ namespace InstrumentPanel
                 FontSize = 10,
                 Padding = new Thickness(6, 1, 6, 1),
                 Margin = new Thickness(0, 0, 6, 0),
-                ToolTip = "Setzt diese Fläche wieder auf 'Normal' zurück (gleich groß wie eine normale Geschwister-Fläche) - macht z.B. 'Quadratisch' oder eine manuelle Größe rückgängig."
+                ToolTip = "Setzt diese Fläche wieder auf 'Normal' zurück (gleich groß wie eine normale Geschwister-Fläche) - macht z.B. eine Kopplung oder eine manuelle Größe rückgängig."
             };
             button.Click += (s, e) =>
             {
-                int baselineWeight = ComputeBaselineWeight(siblings);
-                double scale = 12.0 / baselineWeight;
-                foreach (var sibling in siblings)
-                {
-                    if (sibling == node) continue;
-                    sibling.Weight = Math.Max(1, (int)Math.Round(sibling.Weight * scale));
-                }
-                node.Weight = 12; // "Normal"
+                NormalizeSiblingWeights(siblings, node);
+                node.Weight = NormalWeight; // "Normal"
+                MarkDirty();
                 RedrawTree();
             };
             return button;
@@ -982,25 +1287,41 @@ namespace InstrumentPanel
 
         /// <summary>
         /// Kompakter "Teilen"-Knopf (Pfeil-Symbol) + Anzahl, um dieses Blatt in N
-        /// gleich große Teilflächen in der angegebenen Richtung aufzuteilen. Die
-        /// erste Teilfläche übernimmt die bisherige Anzeige.
+        /// gleich große Teilflächen (2 bis MaxSplitCount) in der angegebenen
+        /// Richtung aufzuteilen. Die erste Teilfläche übernimmt die bisherige
+        /// Anzeige. Die Eingabe im Anzahl-Feld wird pro Knoten gemerkt und geht
+        /// beim Neuzeichnen anderer Flächen nicht verloren.
         /// </summary>
         private UIElement BuildSplitControl(SplitNode node, string icon, SplitDirection direction, string tooltip)
         {
+            var key = (node, direction);
             var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 6, 0) };
-            var countBox = new TextBox { Width = 22, Text = "2", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 2, 0), ToolTip = "Anzahl Teilflächen" };
+            var countBox = new TextBox
+            {
+                Width = 22,
+                Text = _splitCountInputs.TryGetValue(key, out var storedText) ? storedText : "2",
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 2, 0),
+                ToolTip = "Anzahl Teilflächen (2 bis " + MaxSplitCount + ")"
+            };
+            countBox.TextChanged += (s, e) => _splitCountInputs[key] = countBox.Text;
             var splitButton = new Button { Content = icon, Padding = new Thickness(5, 1, 5, 1), ToolTip = tooltip };
             splitButton.Click += (s, e) =>
             {
                 if (!int.TryParse(countBox.Text, out int n) || n < 2) n = 2;
+                bool clamped = false;
+                if (n > MaxSplitCount) { n = MaxSplitCount; clamped = true; }
 
                 string currentGauge = node.GaugeName;
                 node.IsLeaf = false;
                 node.Direction = direction;
+                node.AutoWidth = false; // neue Aufteilung = Kopplung bewusst neu wählen
                 node.Children = new List<SplitNode>();
                 for (int i = 0; i < n; i++)
                     node.Children.Add(new SplitNode { IsLeaf = true, GaugeName = i == 0 ? currentGauge : "(leer)" });
+                MarkDirty();
                 RedrawTree();
+                if (clamped) ShowStatus("Anzahl auf " + MaxSplitCount + " begrenzt.", Brushes.Orange);
             };
             panel.Children.Add(splitButton);
             panel.Children.Add(countBox);
@@ -1024,9 +1345,10 @@ namespace InstrumentPanel
                 return;
             }
 
-            // Gewichtete Aufteilung statt gleicher Teile - Standardgewicht 1 bei
-            // allen Kindern ergibt weiterhin gleich große Teile wie bisher.
-            int totalWeight = node.Children.Sum(c => c.Weight);
+            // Gewichtete Aufteilung statt gleicher Teile - gleiche Gewichte bei
+            // allen Kindern ergeben weiterhin gleich große Teile.
+            long totalWeight = node.Children.Sum(c => (long)c.Weight);
+            if (totalWeight <= 0) totalWeight = 1;
             if (node.Direction == SplitDirection.Rows)
             {
                 Frac accY = y;
@@ -1049,34 +1371,66 @@ namespace InstrumentPanel
             }
         }
 
-        private static long Lcm(long a, long b) => a / Frac.Gcd(a, b) * b;
+        /// <summary>Kleinstes gemeinsames Vielfaches mit Überlaufprüfung (false = zu groß für long).</summary>
+        private static bool TryLcm(long a, long b, out long result)
+        {
+            try
+            {
+                result = checked(a / Frac.Gcd(a, b) * b);
+                return true;
+            }
+            catch (OverflowException)
+            {
+                result = 0;
+                return false;
+            }
+        }
+
+        private void SaveButton_Click(object sender, RoutedEventArgs e)
+        {
+            TrySaveLayout();
+        }
 
         /// <summary>
         /// Erzeugt aus dem aktuellen Baum das Layout FÜR DIESES EINE FENSTER
         /// (rowUnits/colUnits/cells) und schreibt es an Position "Fenster-Nr." im
         /// 'windows'-Array von layout.json - andere, bereits vorhandene Fenster in
-        /// der Datei bleiben dabei unangetastet erhalten.
+        /// der Datei bleiben dabei unangetastet erhalten (null-Einträge werden
+        /// dabei entfernt, damit Designer- und App-Index übereinstimmen).
+        /// Gibt true zurück, wenn die Datei geschrieben wurde (auch wenn das
+        /// anschließende Neuladen in der App fehlschlug).
         /// </summary>
-        private void SaveButton_Click(object sender, RoutedEventArgs e)
+        private bool TrySaveLayout()
         {
             var leaves = new List<(SplitNode Leaf, Frac X, Frac Y, Frac W, Frac H)>();
             ComputeLeafRects(_root, new Frac(0, 1), new Frac(0, 1), new Frac(1, 1), new Frac(1, 1), leaves);
 
             // Gemeinsamen Nenner (kgV) je Achse finden, damit alle Positionen/
-            // Ausdehnungen als ganze Zahlen dargestellt werden können.
+            // Ausdehnungen als ganze Zahlen dargestellt werden können - mit
+            // Obergrenze, damit keine absurd großen Raster entstehen.
             long rowScale = 1, colScale = 1;
+            bool tooLarge = false;
             foreach (var l in leaves)
             {
-                rowScale = Lcm(rowScale, l.Y.Den);
-                rowScale = Lcm(rowScale, l.H.Den);
-                colScale = Lcm(colScale, l.X.Den);
-                colScale = Lcm(colScale, l.W.Den);
+                if (!TryLcm(rowScale, l.Y.Den, out rowScale) || !TryLcm(rowScale, l.H.Den, out rowScale) ||
+                    !TryLcm(colScale, l.X.Den, out colScale) || !TryLcm(colScale, l.W.Den, out colScale) ||
+                    rowScale > MaxGridUnits || colScale > MaxGridUnits)
+                {
+                    tooLarge = true;
+                    break;
+                }
+            }
+            if (tooLarge)
+            {
+                ShowStatus("Nicht gespeichert: Die Aufteilung ist zu fein (Raster größer als " + MaxGridUnits +
+                    " Einheiten je Richtung). Bitte Aufteilung vereinfachen, weniger Zeilen koppeln oder Gewichte mit '↩ Normal' zurücksetzen.", Brushes.Salmon);
+                return false;
             }
 
             var cellDicts = new List<Dictionary<string, object>>();
             foreach (var l in leaves)
             {
-                // Leere Felder werden JETZT bewusst MIT gespeichert (mit
+                // Leere Felder werden bewusst MIT gespeichert (mit
                 // "name": "(leer)") - sonst geht beim Speichern die Grenze
                 // zwischen zwei benachbarten leeren Feldern verloren, und beim
                 // Wiedereinlesen sehen sie wie EIN größeres, unzerteiltes leeres
@@ -1101,6 +1455,7 @@ namespace InstrumentPanel
                 ["cells"] = cellDicts
             };
 
+            int windowIndex;
             try
             {
                 var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
@@ -1115,77 +1470,169 @@ namespace InstrumentPanel
                     root = new Dictionary<string, object>();
                 }
 
-                // Bestehende Fenster-Liste übernehmen (falls vorhanden), sonst neu
-                // anlegen - und das aktuell bearbeitete Fenster ersetzen bzw.
+                // Bestehende Fenster-Liste übernehmen (falls vorhanden, kompaktiert),
+                // sonst neu anlegen - und das aktuell bearbeitete Fenster ersetzen bzw.
                 // ergänzen, alle anderen bleiben unverändert.
                 var windows = root.TryGetValue("windows", out var windowsObj)
-                    ? ((ArrayList)windowsObj).Cast<object>().ToList()
+                    ? CompactWindows(windowsObj, out _).Cast<object>().ToList()
                     : new List<object>();
 
-                int windowIndex = _currentWindowIndex;
-
-                while (windows.Count <= windowIndex)
-                    windows.Add(null);
-                windows[windowIndex] = thisWindow;
+                windowIndex = Math.Min(_currentWindowIndex, windows.Count); // keine Lücken (null) mehr erzeugen
+                if (windowIndex == windows.Count) windows.Add(thisWindow);
+                else windows[windowIndex] = thisWindow;
+                _currentWindowIndex = windowIndex;
 
                 root["windows"] = windows;
 
-                File.WriteAllText(_layoutPath, serializer.Serialize(root));
-                _onSaved?.Invoke();
-                RefreshWindowButtons();
-                StatusText.Foreground = Brushes.LightGreen;
-                StatusText.Text = "Gespeichert und übernommen (Fenster " + windowIndex + ", " + cellDicts.Count + " Anzeige(n)).";
+                WriteAllTextAtomic(_layoutPath, serializer.Serialize(root));
             }
             catch (Exception ex)
             {
-                StatusText.Foreground = Brushes.Salmon;
-                StatusText.Text = "Fehler beim Speichern: " + ex.Message;
+                ShowStatus("Fehler beim Speichern: " + ex.Message, Brushes.Salmon);
+                return false;
             }
+
+            // Ab hier ist die Datei geschrieben - Fehler beim Neuladen der App sind KEIN Speicherfehler.
+            _dirty = false;
+            _reconstructionIncomplete = false;
+            RefreshWindowButtons();
+
+            string callbackError = null;
+            try
+            {
+                _onSaved?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                callbackError = ex.Message;
+            }
+
+            if (callbackError != null)
+                ShowStatus("Gespeichert (Fenster " + windowIndex + "), aber Neuladen fehlgeschlagen: " + callbackError, Brushes.Orange);
+            else
+                ShowStatus("Gespeichert und übernommen (Fenster " + windowIndex + ", " + cellDicts.Count + " Anzeige(n)).", Brushes.LightGreen);
+            return true;
         }
 
         // -----------------------------------------------------------------
-        // Einstellungen-Reiter (settings.json) - unverändert
+        // Debug-Werte-Reiter
         // -----------------------------------------------------------------
 
         /// <summary>
         /// Liest den aktuellen Stand aller angefragten SimConnect-Variablen aus der
         /// geteilten SimConnectService-Instanz und zeigt sie (alphabetisch sortiert)
-        /// im "Debug-Werte"-Reiter an.
+        /// im "Debug-Werte"-Reiter an. Nur wenn dieser Reiter aktiv ist, und die
+        /// vorhandenen Einträge werden in-place aktualisiert (ObservableCollection),
+        /// damit Scroll-Position und Auswahl nicht jede Sekunde springen.
         /// </summary>
         private void RefreshDebugValues()
         {
-            if (_service == null) return;
+            if (_service == null || !DebugTab.IsSelected) return;
 
-            var snapshot = _service.GetLatestValuesSnapshot();
-            DebugValuesList.ItemsSource = snapshot
-                .OrderBy(kv => kv.Key)
-                .Select(kv => new { Name = kv.Key, Value = kv.Value.ToString(CultureInfo.InvariantCulture) })
-                .ToList();
+            try
+            {
+                var snapshot = _service.GetLatestValuesSnapshot();
+
+                // Entfallene Variablen entfernen.
+                foreach (var gone in _debugValueRows.Keys.Where(k => !snapshot.ContainsKey(k)).ToList())
+                {
+                    _debugValueItems.Remove(_debugValueRows[gone]);
+                    _debugValueRows.Remove(gone);
+                }
+
+                // Vorhandene aktualisieren, neue alphabetisch an der richtigen Stelle einfügen.
+                foreach (var kv in snapshot.OrderBy(k => k.Key))
+                {
+                    string valueText = kv.Value.ToString(CultureInfo.InvariantCulture);
+                    if (_debugValueRows.TryGetValue(kv.Key, out var existingRow))
+                    {
+                        existingRow.Value = valueText;
+                        continue;
+                    }
+
+                    var newRow = new DebugValueRow { Name = kv.Key, Value = valueText };
+                    int insertAt = 0;
+                    while (insertAt < _debugValueItems.Count &&
+                           string.Compare(_debugValueItems[insertAt].Name, kv.Key, StringComparison.CurrentCulture) < 0)
+                        insertAt++;
+                    _debugValueItems.Insert(insertAt, newRow);
+                    _debugValueRows[kv.Key] = newRow;
+                }
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Write("LayoutDesigner: Debug-Werte konnten nicht aktualisiert werden - " + ex.Message);
+            }
         }
 
+        // -----------------------------------------------------------------
+        // Einstellungen-Reiter (settings.json)
+        // -----------------------------------------------------------------
+
         /// <summary>
-        /// Füllt den "Einstellungen"-Reiter mit den aktuell wirksamen Werten (aus
-        /// AppSettings, das settings.json beim Programmstart bereits gelesen hat).
+        /// Füllt den "Einstellungen"-Reiter mit den Werten aus settings.json
+        /// (frisch von der Platte gelesen - AppSettings kennt nur den Stand beim
+        /// Programmstart und wäre nach einem Speichern veraltet). Fehlt die Datei
+        /// oder ein Wert, gilt der Wert aus AppSettings.
         /// </summary>
         private void LoadSettingsIntoUi()
         {
-            RefreshIntervalBox.Text = AppSettings.RefreshIntervalMs.ToString();
-            GaugeCellSizeBox.Text = AppSettings.GaugeCellSize.ToString(CultureInfo.InvariantCulture);
-            DebugLoggingCheckBox.IsChecked = AppSettings.DebugLoggingEnabled;
-            BallDivisorBox.Text = AppSettings.TurnCoordinatorBallDivisor.ToString(CultureInfo.InvariantCulture);
-            VacuumThresholdBox.Text = AppSettings.TurnCoordinatorVacuumThreshold.ToString(CultureInfo.InvariantCulture);
-            OilPressOffsetBox.Text = AppSettings.OilPressAtmosphericOffsetPsi.ToString(CultureInfo.InvariantCulture);
-            EgtMinFBox.Text = AppSettings.EgtMinF.ToString(CultureInfo.InvariantCulture);
-            EgtMaxFBox.Text = AppSettings.EgtMaxF.ToString(CultureInfo.InvariantCulture);
+            Dictionary<string, object> root = null;
+            try
+            {
+                if (File.Exists(_settingsPath))
+                {
+                    var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
+                    root = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(_settingsPath));
+                }
+            }
+            catch { /* defekte Datei - mit den Werten aus AppSettings weiterarbeiten */ }
+            if (root == null) root = new Dictionary<string, object>();
+
+            var turnCoordinator = root.TryGetValue("turnCoordinator", out var tcObj) ? tcObj as Dictionary<string, object> : null;
+            var windowBackground = root.TryGetValue("windowBackground", out var bgObj) ? bgObj as Dictionary<string, object> : null;
+
+            RefreshIntervalBox.Text = ((int)ReadNumber(root, "refreshIntervalMs", AppSettings.RefreshIntervalMs)).ToString(CultureInfo.InvariantCulture);
+            GaugeCellSizeBox.Text = ReadNumber(root, "gaugeCellSize", AppSettings.GaugeCellSize).ToString(CultureInfo.InvariantCulture);
+            DebugLoggingCheckBox.IsChecked = root.TryGetValue("debugLogging", out var debugObj) && debugObj is bool debugFlag
+                ? debugFlag : AppSettings.DebugLoggingEnabled;
+            BallDivisorBox.Text = ReadNumber(turnCoordinator, "ballDivisor", AppSettings.TurnCoordinatorBallDivisor).ToString(CultureInfo.InvariantCulture);
+            VacuumThresholdBox.Text = ReadNumber(turnCoordinator, "vacuumThreshold", AppSettings.TurnCoordinatorVacuumThreshold).ToString(CultureInfo.InvariantCulture);
+            AttitudeVacuumThresholdBox.Text = ReadNumber(root, "attitudeVacuumThreshold", AppSettings.AttitudeVacuumThreshold).ToString(CultureInfo.InvariantCulture);
+            OilPressOffsetBox.Text = ReadNumber(root, "oilPressAtmosphericOffsetPsi", AppSettings.OilPressAtmosphericOffsetPsi).ToString(CultureInfo.InvariantCulture);
+            EgtMinFBox.Text = ReadNumber(root, "egtMinF", AppSettings.EgtMinF).ToString(CultureInfo.InvariantCulture);
+            EgtMaxFBox.Text = ReadNumber(root, "egtMaxF", AppSettings.EgtMaxF).ToString(CultureInfo.InvariantCulture);
+
+            string mode = windowBackground != null && windowBackground.TryGetValue("mode", out var modeObj) && modeObj != null
+                ? modeObj.ToString() : AppSettings.WindowBackgroundMode;
+            string imagePath = windowBackground != null && windowBackground.TryGetValue("imagePath", out var imgObj) && imgObj != null
+                ? imgObj.ToString() : AppSettings.WindowBackgroundImagePath;
 
             WindowBackgroundModeBox.ItemsSource = WindowBackgroundBrushes.AvailableModes
                 .Select(m => new { m.Mode, m.Label }).ToList();
             WindowBackgroundModeBox.DisplayMemberPath = "Label";
             WindowBackgroundModeBox.SelectedValuePath = "Mode";
-            WindowBackgroundModeBox.SelectedValue = AppSettings.WindowBackgroundMode;
+            // Modus case-insensitiv (die App wertet ihn ebenfalls so aus), sonst würde z.B.
+            // "Dark-Panel" im Dropdown auf "none" fallen und beim Speichern überschrieben.
+            WindowBackgroundModeBox.SelectedValue = (mode ?? "none").Trim().ToLowerInvariant();
             if (WindowBackgroundModeBox.SelectedItem == null) WindowBackgroundModeBox.SelectedIndex = 0;
-            CustomImagePathBox.Text = AppSettings.WindowBackgroundImagePath;
-            CustomImageRow.Visibility = AppSettings.WindowBackgroundMode == "custom" ? Visibility.Visible : Visibility.Collapsed;
+            CustomImagePathBox.Text = imagePath;
+            CustomImageRow.Visibility = (WindowBackgroundModeBox.SelectedValue as string) == "custom" ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        /// <summary>Liest eine Zahl tolerant aus einem JSON-Objekt (fehlend/ungültig = fallback).</summary>
+        private static double ReadNumber(Dictionary<string, object> dict, string key, double fallback)
+        {
+            try
+            {
+                if (dict != null && dict.TryGetValue(key, out var raw) && raw != null)
+                {
+                    double value = Convert.ToDouble(raw, CultureInfo.InvariantCulture);
+                    if (!double.IsNaN(value) && !double.IsInfinity(value)) return value;
+                }
+            }
+            catch { /* ungültiger Wert - Fallback */ }
+            return fallback;
         }
 
         private void WindowBackgroundModeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1206,12 +1653,88 @@ namespace InstrumentPanel
         }
 
         /// <summary>
+        /// Liest eine Dezimalzahl aus einem Textfeld: Komma wird zu Punkt, KEIN
+        /// Tausendertrennzeichen ("14,5" ist 14.5 und nicht 145), NaN/Unendlich
+        /// werden abgelehnt.
+        /// </summary>
+        private static bool TryParseDecimal(string text, out double value)
+        {
+            string normalized = (text ?? "").Trim().Replace(',', '.');
+            return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+                   && !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        /// <summary>
         /// Schreibt die im "Einstellungen"-Reiter eingetragenen Werte nach
         /// settings.json - bestehende, hier nicht bearbeitete Schlüssel (falls
         /// die Datei manuell um weitere ergänzt wurde) bleiben dabei erhalten.
+        /// Alle Eingaben werden VOR dem Schreiben geprüft (Zahlenformat und
+        /// Wertebereich); bei einem Fehler nennt die Meldung das Feld und es wird
+        /// nichts geschrieben.
         /// </summary>
         private void SaveSettingsButton_Click(object sender, RoutedEventArgs e)
         {
+            // ---- Eingaben lesen und prüfen (nichts schreiben, solange etwas ungültig ist) ----
+            string validationError = null;
+
+            double ReadDecimalField(string label, string text)
+            {
+                if (validationError != null) return 0;
+                if (!TryParseDecimal(text, out double parsed))
+                {
+                    validationError = "Feld '" + label + "': ungültige Zahl";
+                    return 0;
+                }
+                return parsed;
+            }
+
+            int refreshIntervalMs = 0;
+            if (!int.TryParse((RefreshIntervalBox.Text ?? "").Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out refreshIntervalMs))
+                validationError = "Feld 'Aktualisierungsrate (ms)': ungültige Zahl (ganze Zahl erwartet)";
+            else if (refreshIntervalMs < 10 || refreshIntervalMs > 5000)
+                validationError = "Feld 'Aktualisierungsrate (ms)': Wert muss zwischen 10 und 5000 liegen";
+
+            double gaugeCellSize = ReadDecimalField("Anzeigen-Basisgröße (px)", GaugeCellSizeBox.Text);
+            if (validationError == null && (gaugeCellSize < 50 || gaugeCellSize > 2000))
+                validationError = "Feld 'Anzeigen-Basisgröße (px)': Wert muss zwischen 50 und 2000 liegen";
+
+            double ballDivisor = ReadDecimalField("Ball-Teiler", BallDivisorBox.Text);
+            if (validationError == null && ballDivisor == 0)
+                validationError = "Feld 'Ball-Teiler': darf nicht 0 sein";
+
+            double vacuumThreshold = ReadDecimalField("Vakuum-Schwellwert (inHg)", VacuumThresholdBox.Text);
+            if (validationError == null && vacuumThreshold < 0)
+                validationError = "Feld 'Vakuum-Schwellwert (inHg)': darf nicht negativ sein";
+
+            double attitudeVacuumThreshold = ReadDecimalField("Künstlicher Horizont: Vakuum-Schwelle (inHg)", AttitudeVacuumThresholdBox.Text);
+            if (validationError == null && attitudeVacuumThreshold < 0)
+                validationError = "Feld 'Künstlicher Horizont: Vakuum-Schwelle (inHg)': darf nicht negativ sein (0 = Vakuum ignorieren)";
+
+            double oilPressOffset = ReadDecimalField("Atmosphären-Offset (PSI)", OilPressOffsetBox.Text);
+            double egtMinF = ReadDecimalField("Skalen-Minimum (°F)", EgtMinFBox.Text);
+            double egtMaxF = ReadDecimalField("Skalen-Maximum (°F)", EgtMaxFBox.Text);
+            if (validationError == null && egtMaxF <= egtMinF)
+                validationError = "Feld 'Skalen-Maximum (°F)': muss größer als das Skalen-Minimum sein";
+
+            string backgroundMode = (WindowBackgroundModeBox.SelectedValue as string) ?? "none";
+            string backgroundImagePath = CustomImagePathBox.Text ?? "";
+            // Relative Pfade wie in WindowBackgroundBrushes gegen den Programmordner auflösen
+            string resolvedImagePath = string.IsNullOrWhiteSpace(backgroundImagePath) ? ""
+                : (Path.IsPathRooted(backgroundImagePath)
+                    ? backgroundImagePath
+                    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, backgroundImagePath));
+            if (validationError == null && backgroundMode == "custom" &&
+                (resolvedImagePath.Length == 0 || !File.Exists(resolvedImagePath)))
+                validationError = "Feld 'Eigenes Bild': Modus 'Eigenes Bild' braucht einen vorhandenen Dateipfad";
+
+            if (validationError != null)
+            {
+                SettingsStatusText.Foreground = Brushes.Salmon;
+                SettingsStatusText.Text = "Nicht gespeichert - " + validationError;
+                return;
+            }
+
+            // ---- Schreiben ----
             try
             {
                 var serializer = new System.Web.Script.Serialization.JavaScriptSerializer();
@@ -1222,27 +1745,29 @@ namespace InstrumentPanel
                 else
                     root = new Dictionary<string, object>();
 
-                root["refreshIntervalMs"] = int.Parse(RefreshIntervalBox.Text);
-                root["gaugeCellSize"] = double.Parse(GaugeCellSizeBox.Text, CultureInfo.InvariantCulture);
+                root["refreshIntervalMs"] = refreshIntervalMs;
+                root["gaugeCellSize"] = gaugeCellSize;
                 root["debugLogging"] = DebugLoggingCheckBox.IsChecked == true;
 
                 var turnCoordinator = root.TryGetValue("turnCoordinator", out var tcObj) && tcObj is Dictionary<string, object> tc
                     ? tc : new Dictionary<string, object>();
-                turnCoordinator["ballDivisor"] = double.Parse(BallDivisorBox.Text, CultureInfo.InvariantCulture);
-                turnCoordinator["vacuumThreshold"] = double.Parse(VacuumThresholdBox.Text, CultureInfo.InvariantCulture);
+                turnCoordinator["ballDivisor"] = ballDivisor;
+                turnCoordinator["vacuumThreshold"] = vacuumThreshold;
                 root["turnCoordinator"] = turnCoordinator;
 
-                root["oilPressAtmosphericOffsetPsi"] = double.Parse(OilPressOffsetBox.Text, CultureInfo.InvariantCulture);
-                root["egtMinF"] = double.Parse(EgtMinFBox.Text, CultureInfo.InvariantCulture);
-                root["egtMaxF"] = double.Parse(EgtMaxFBox.Text, CultureInfo.InvariantCulture);
+                root["attitudeVacuumThreshold"] = attitudeVacuumThreshold;
+
+                root["oilPressAtmosphericOffsetPsi"] = oilPressOffset;
+                root["egtMinF"] = egtMinF;
+                root["egtMaxF"] = egtMaxF;
 
                 var windowBackground = root.TryGetValue("windowBackground", out var bgObj) && bgObj is Dictionary<string, object> bg
                     ? bg : new Dictionary<string, object>();
-                windowBackground["mode"] = (WindowBackgroundModeBox.SelectedValue as string) ?? "none";
-                windowBackground["imagePath"] = CustomImagePathBox.Text ?? "";
+                windowBackground["mode"] = backgroundMode;
+                windowBackground["imagePath"] = backgroundImagePath;
                 root["windowBackground"] = windowBackground;
 
-                File.WriteAllText(_settingsPath, serializer.Serialize(root));
+                WriteAllTextAtomic(_settingsPath, serializer.Serialize(root));
                 SettingsStatusText.Foreground = Brushes.LightGreen;
                 SettingsStatusText.Text = "Gespeichert. Bitte die App neu starten, damit es übernommen wird.";
             }
