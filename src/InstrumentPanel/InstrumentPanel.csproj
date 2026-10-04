@@ -12,7 +12,7 @@
     <PlatformTarget>x64</PlatformTarget>
     <LangVersion>latest</LangVersion>
     <!-- Versionsnummer: bei jedem Release hochzählen (SemVer) und als Git-Tag vX.Y.Z setzen. -->
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <Authors>Gesiima</Authors>
     <Company>Gesiima</Company>
     <Description>MSFS 2024 Instrument Panel - entstanden in Zusammenarbeit mit Claude (Anthropic)</Description>

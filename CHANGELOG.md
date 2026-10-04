@@ -5,6 +5,8 @@ Versionierung nach [SemVer](https://semver.org/lang/de/) (`MAJOR.MINOR.PATCH`).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-04
+
 ### Hinzugefügt
 - Einstellung `attitudeVacuumThreshold` (Standard 3.0 inHg): eigene Vakuum-Schwelle für den künstlichen Horizont, im Setup-Reiter „Einstellungen“ editierbar. `0` ignoriert das Vakuum (z. B. für elektrische Kreisel). Bisher teilte sich der Horizont die Schwelle des Turn Coordinators.
 - Setup-Fenster: Rückfrage bei ungespeicherten Änderungen (Fensterwechsel, neues Fenster, Leeren, Schließen) und beim Löschen eines Fensters.
