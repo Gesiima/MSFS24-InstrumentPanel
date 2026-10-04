@@ -9,7 +9,7 @@ Rahmenlose, transparente, immer-im-Vordergrund WPF-Anwendung (.NET 4.7.2 / C#) f
 ## Architektur
 
 ```
-InstrumentPanel/
+src/InstrumentPanel/
 ├── App.xaml/.cs                   – Mehrfenster-Bootstrapper, eine gemeinsame SimConnectService-Instanz
 ├── MainWindow.xaml/.cs            – Fenster pro layout.json-Eintrag, Grid-Aufbau aus cells[], Live-Reload
 ├── IGauge.cs                      – Interface: Initialize(SimConnectService), UpdateStatus()
@@ -19,7 +19,8 @@ InstrumentPanel/
 ├── GaugeDrawing.cs                – gemeinsame Zeichen-Hilfsfunktionen (PointOnCircle, AddCenteredText, …)
 ├── WindowBackgroundBrushes.cs     – Fenster-Hintergrundmuster (Alu, Carbon, Vignette, eigenes Bild)
 ├── LayoutDesignerWindow.xaml/.cs  – Setup-Fenster: Layout-Editor, Einstellungen, Debug-Werte (3 Reiter)
-├── [Gauge-Controls]               – je eine .xaml + .xaml.cs pro Instrument (siehe unten)
+├── AppVersion.cs                  – Programmversion (Quelle: <Version> in der csproj)
+├── Gauges/                        – je Instrument eine .xaml + .xaml.cs (siehe unten)
 ├── layout.json                    – Fenster-/Zellen-Konfiguration
 └── settings.json                  – Anwendungseinstellungen
 ```
@@ -88,13 +89,14 @@ Vier wählbare Modi (`WindowBackgroundBrushes.cs`): kein Hintergrund (Standard, 
 - **Rekursives Split-Modell**: Jede Fläche lässt sich beliebig oft in Zeilen/Spalten teilen (`SplitNode`-Baum), inkl. "+ Fläche hinzufügen" (übernimmt automatisch das Gewicht der Geschwister, kein Dominanz-Bug).
 - **"Breite an Zeilen koppeln"**: Automatische Breitenanpassung geteilter Flächen, damit alle Anzeigen quadratisch bleiben – Referenz ist die am wenigsten unterteilte Fläche (nicht die häufigste), Normalisierung nur beim Umschalten (kein Aufschaukel-Effekt bei wiederholtem Neuzeichnen).
 - **Mehrfenster-Unterstützung**: Beliebig viele unabhängige Fenster, Live-Reload ohne Neustart.
+- **Versionierung**: siehe [CHANGELOG](../CHANGELOG.md) und README (Release-Skript).
 - **Debug-Werte-Reiter**: Alle SimConnect-Variablen live (1×/Sekunde), alphabetisch.
 - **Mausrad + größerer Klickbereich** bei allen Drehknöpfen (VOR OBS, Heading-Knöpfe, Altimeter, Attitude, EGT REF).
 
 ## Build
 
 ```powershell
-cd InstrumentPanel
+cd src/InstrumentPanel
 dotnet build -c Release
 .\bin\Release\net472\InstrumentPanel.exe
 ```
