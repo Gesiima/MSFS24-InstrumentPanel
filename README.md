@@ -46,7 +46,7 @@ Konfiguration liegt neben der `.exe`: `layout.json` (Fenster/Zellen) und `settin
 src/InstrumentPanel/
 ├── Gauges/            je Instrument eine XAML + Code-behind
 ├── App, MainWindow, LayoutDesignerWindow, SimConnectService, ...
-├── icon/              Anwendungs-Icon
+├── icon/              Anwendungs-Icon (app.ico, erzeugt mit scripts/New-AppIcon.ps1)
 ├── lib/               MSFS-SDK-DLLs (lokal, nicht versioniert)
 ├── layout.json        Standard-Layout
 └── settings.json      Standard-Einstellungen
