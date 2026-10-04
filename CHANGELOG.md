@@ -6,8 +6,8 @@ Versionierung nach [SemVer](https://semver.org/lang/de/) (`MAJOR.MINOR.PATCH`).
 ## [Unreleased]
 
 ### Geändert
-- Anwendungs-Icon neu erzeugt: pp.ico enthielt nur eine 16×16-Ebene, jetzt 16, 24, 32, 48, 64, 128 und 256 px, jeweils einzeln gezeichnet (kräftigerer Zeiger, bei kleinen Größen nur die vier Hauptstriche). Erzeugung per scripts/New-AppIcon.ps1.
-- Die unbenutzten Vorschaudateien preview.png/preview_256.png ersetzt durch icon/app_256.png.
+- Anwendungs-Icon neu erzeugt: `app.ico` enthielt nur eine 16×16-Ebene, jetzt 16, 24, 32, 48, 64, 128 und 256 px, jeweils einzeln gezeichnet (kräftigerer Zeiger, bei kleinen Größen nur die vier Hauptstriche). Erzeugung per `scripts/New-AppIcon.ps1`.
+- Die unbenutzten Vorschaudateien `preview.png`/`preview_256.png` ersetzt durch `icon/app_256.png`.
 
 ## [1.0.0] - 2026-10-04
 
