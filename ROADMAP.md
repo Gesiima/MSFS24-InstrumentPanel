@@ -6,8 +6,12 @@ Alle Punkte unter „Zu prüfen" sind **ungetestete Annahmen oder unbestätigte 
 ## Zu prüfen
 
 - **Öldruck-Versatz (Oil Temp/Press):** Beobachtet wurde ein Versatz (Rohwert 65 zeigt ca. 55, 78 zeigt ca. 65), der mangels zuverlässiger Live-Ablesung nicht bestätigt werden konnte. Der Atmosphärendruck ist als Ursache ausgeschlossen (er würde einen konstanten, keinen linear wachsenden Versatz ergeben). Die Kalibrierung bleibt bis zur Klärung unverändert.
-- **Künstlicher Horizont:** Vorzeichen des Nick-Winkels und Skalierung von `ATTITUDE BARS POSITION` sind Annahmen und müssen im Simulator geprüft werden (siehe [Technische Hinweise](docs/Technische-Hinweise.md)).
 - **Höhenmesser-Knopf bei Glascockpit-Flugzeugen:** Laut SimConnect-Community wirkt `KOHLSMAN_INC`/`KOHLSMAN_DEC` dort teils nur auf den Standby-Höhenmesser. Im MSFS 2024 zu prüfen.
+
+## Bestätigt (im Simulator geprüft)
+
+- **Künstlicher Horizont, Nick-Richtung:** korrekt (Vorzeichenumkehr von `PLANE PITCH DEGREES` stimmt).
+- **Künstlicher Horizont, Trimm-Skalierung** (`ATTITUDE BARS POSITION`, Faktoren 40/28): im Betrieb unauffällig, keine Abweichung bemerkt. Nicht gezielt vermessen.
 
 ## Geplant
 

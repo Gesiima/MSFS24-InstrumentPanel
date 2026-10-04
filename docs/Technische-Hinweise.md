@@ -85,9 +85,7 @@ und `ATTITUDE BARS POSITION` (Stellung des Nick-Trimm-Knopfs). Zwei getrennte,
 rotierende/verschiebende Ebenen: die Himmel/Boden-"Kugel" (Translate+Rotate) und
 die Rollwinkel-Skala (nur Rotate, bleibt beim Nicken an Ort und Stelle) - beide
 mit fixem Kreis-Clip, damit nichts über den Bezel-Rand hinausragt. Drehknopf
-sendet `ATTITUDE_BARS_POSITION_UP`/`DOWN`. Einige Werte (Vorzeichen des
-Nick-Winkels, Skalierung von `ATTITUDE BARS POSITION`) sind Annahmen ohne
-Testmöglichkeit meinerseits - ggf. nach erstem Test anpassen.
+sendet `ATTITUDE_BARS_POSITION_UP`/`DOWN`. Im Simulator bestätigt: Vorzeichen des Nick-Winkels korrekt; die Skalierung von `ATTITUDE BARS POSITION` ist im Betrieb unauffällig (nicht gezielt vermessen).
 
 ---
 *Entstanden in Zusammenarbeit: Coding durch Claude (Anthropic), Anforderungen, Kalibrierung und Tests durch Gesiima. Lizenz: AGPL-3.0, siehe [LICENSE](../LICENSE).*
