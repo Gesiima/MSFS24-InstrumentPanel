@@ -5,10 +5,6 @@ Versionierung nach [SemVer](https://semver.org/lang/de/) (`MAJOR.MINOR.PATCH`).
 
 ## [Unreleased]
 
-### Geändert
-- Anwendungs-Icon neu erzeugt: `app.ico` enthielt nur eine 16×16-Ebene, jetzt 16, 24, 32, 48, 64, 128 und 256 px, jeweils einzeln gezeichnet (kräftigerer Zeiger, bei kleinen Größen nur die vier Hauptstriche). Erzeugung per `scripts/New-AppIcon.ps1`.
-- Die unbenutzten Vorschaudateien `preview.png`/`preview_256.png` ersetzt durch `icon/app_256.png`.
-
 ## [1.0.0] - 2026-10-04
 
 Erste Veröffentlichung auf GitHub; fasst die Entwicklung bis hierhin zusammen.
@@ -28,6 +24,8 @@ Erste Veröffentlichung auf GitHub; fasst die Entwicklung bis hierhin zusammen.
 - Versionierung (Version in der csproj, Anzeige im Setup-Fenster und Debug-Log, Release-Skript `scripts/New-Release.ps1`), Lizenz AGPL-3.0, Dokumentation unter `docs/`.
 
 ### Geändert
+- Anwendungs-Icon neu erzeugt: `app.ico` enthielt nur eine 16×16-Ebene, jetzt 16, 24, 32, 48, 64, 128 und 256 px, jeweils einzeln gezeichnet (kräftigerer Zeiger, bei kleinen Größen nur die vier Hauptstriche). Erzeugung per `scripts/New-AppIcon.ps1`.
+- Die unbenutzten Vorschaudateien `preview.png`/`preview_256.png` ersetzt durch `icon/app_256.png`.
 - Fuel-Anzeige als Referenz-Template auf volle Größe hochskaliert (OuterRadius 88 → 132, Canvas 200×200 → 300×300); dient als Vorlage für EGT/Flow und Oil Temp/Press.
 - Layout-Designer: „Angepasst"-Erkennung auf Verhältnis- statt Absolutwert-Basis umgestellt.
 - Klickbereich aller Drehknöpfe (VOR OBS, Heading-Knöpfe, Altimeter, Attitude, EGT REF) auf das 1,5- bis 2,5-fache der sichtbaren Größe vergrößert.
