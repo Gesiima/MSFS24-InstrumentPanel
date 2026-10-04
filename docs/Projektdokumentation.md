@@ -103,6 +103,8 @@ dotnet build -c Release
 
 ## Offene Punkte / mögliche nächste Schritte
 
+Aktuelle Planung und Prüfpunkte: siehe [ROADMAP](../ROADMAP.md).
+
 - Oil Press-Kalibrierung: ein beobachteter Versatz (Rohwert 65→zeigt ~55, 78→~65) konnte mangels zuverlässiger Live-Ablesung nicht bestätigt werden – bleibt vorerst unverändert, Atmosphärendruck als Ursache wurde ausgeschlossen (würde konstanten, nicht linear wachsenden Versatz ergeben).
 - Weitere Anzeigen folgen demselben Muster: Fuel-/EGT-Template klonen → SimConnect-Variablen umstellen → Kalibrierpunkte (Wert/Winkel-Paare) ermitteln → ATAN2-Zielradius ggf. anpassen → Feinjustage von Zahlen-/Textpositionen iterativ per Screenshot-Feedback.
 

@@ -10,7 +10,7 @@ Rahmenlose, transparente, immer-im-Vordergrund liegende WPF-Anwendung (.NET Fram
 - Zwei-Wege-Drehknöpfe (QNH, Heading Bug, Gyro Drift, OBS, …) schreiben zurück in den Simulator
 - Debug-Reiter mit allen SimConnect-Werten live
 
-Details: [Projektdokumentation](docs/Projektdokumentation.md) · [Technische Hinweise je Anzeige](docs/Technische-Hinweise.md)
+Details: [Projektdokumentation](docs/Projektdokumentation.md) · [Technische Hinweise je Anzeige](docs/Technische-Hinweise.md) · [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md)
 
 ## Voraussetzungen
 
