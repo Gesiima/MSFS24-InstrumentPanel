@@ -395,10 +395,26 @@ namespace InstrumentPanel
             // eine "volle" Anzeige typischerweise die meisten Raster-Zeilen einer
             // Spalte belegt, nehmen wir den größten vorkommenden RowSpan als
             // Referenz für "1.0" (eine normale Zeile).
+            //
+            // Referenz-Anzeige: unter den Zellen mit dem größten RowSpan die SCHMALSTE. So bleibt
+            // eine normale (quadratische) Anzeige auch dann in der richtigen Größe, wenn daneben
+            // eine breitere Anzeige liegt (z.B. Kompass mit doppelter Breite) - deren größerer
+            // ColSpan darf die Startgröße nicht verzerren.
             double cellSize = AppSettings.GaugeCellSize;
             int maxRowSpan = Math.Max(1, cells.Count == 0 ? 1 : cells.Max(c => c.RowSpan));
-            int maxColSpan = Math.Max(1, cells.Count == 0 ? 1 : cells.Max(c => c.ColSpan));
-            ApplyStartSize((colWidths.Sum() / maxColSpan) * cellSize, ((double)rowUnits / maxRowSpan) * cellSize);
+            double refWidthUnits = 0;
+            foreach (var cell in cells)
+            {
+                if (cell.RowSpan != maxRowSpan) continue;
+
+                int col = Math.Min(cell.Col, colCount - 1);
+                int colSpan = Math.Max(1, Math.Min(cell.ColSpan, colCount - col));
+                double width = 0;
+                for (int c = col; c < col + colSpan; c++) width += colWidths[c];
+                if (refWidthUnits == 0 || width < refWidthUnits) refWidthUnits = width;
+            }
+            if (refWidthUnits <= 0) refWidthUnits = Math.Max(1, cells.Count == 0 ? 1 : cells.Max(c => c.ColSpan));
+            ApplyStartSize((colWidths.Sum() / refWidthUnits) * cellSize, ((double)rowUnits / maxRowSpan) * cellSize);
 
             foreach (var cell in cells)
             {
@@ -503,6 +519,10 @@ namespace InstrumentPanel
                     return new AirspeedGaugeControl();
                 case "TurnCoordinator":
                     return new TurnCoordinatorGaugeControl();
+                case "Compass":
+                    return new CompassGaugeControl();
+                case "SlipIndicator":
+                    return new SlipIndicatorGaugeControl();
                 case "Altimeter":
                     return new AltimeterGaugeControl();
                 case "Tachometer":

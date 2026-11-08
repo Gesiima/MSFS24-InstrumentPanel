@@ -34,7 +34,7 @@ namespace InstrumentPanel
     {
         private static readonly string[] AvailableGauges =
         {
-            "(leer)", "Airspeed", "TurnCoordinator", "Altimeter", "Tachometer",
+            "(leer)", "Airspeed", "TurnCoordinator", "SlipIndicator", "Compass", "Altimeter", "Tachometer",
             "VerticalSpeed", "HeadingIndicator", "AttitudeIndicator", "Fuel", "Vor", "Ruler", "EgtFlow", "OilTempPress"
         };
 

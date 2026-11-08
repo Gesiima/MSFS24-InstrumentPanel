@@ -45,6 +45,8 @@ Mehrere echte Flugzeug-Skalen sind **nicht linear** über den vollen Winkel vert
 |---|---|---|---|
 | Airspeed | AirspeedGaugeControl | AIRSPEED INDICATED | — |
 | Turn Coordinator | TurnCoordinatorGaugeControl | TURN COORDINATOR BALL, SUCTION PRESSURE | Vakuum-Schwellwert & Ball-Teiler einstellbar |
+| Compass | CompassGaugeControl | WISKEY COMPASS INDICATION DEGREES | Doppelte Breite (Canvas 600×300); Rose als nach unten aufgeweitete Trommel (Kegelstumpf, `DrumTopRadius`/`DrumBottomRadius`/`DrumHeight`) flach von schräg oben projiziert (`ViewElevationDeg`: x = r·sin φ, y = BaseY + r·cos φ·sin E − h·cos E); vorn hohes Zahlenband, Übergang zur Oberseite über abgerundete Schulter (`ShoulderRadius`), Oberseite als bis zum Drehpunkt abfallender Kegel (`TopSlopeDeg`) mit Skalenstrichen, die über die Schulter bis auf die Vorderseite laufen, sowie Zahl und darunter Buchstabe (um 180° versetzt beschriftet, hinten steht dieselbe Peilung wie vorn), Zahlen steigen vorn nach links an, ein gelber Steuerstrich, Dämpfung als gedämpfte Feder (`NaturalFrequency`, `DampingRatio`), läuft über `CompositionTarget.Rendering` |
+| Slip Indicator | SlipIndicatorGaugeControl | TURN COORDINATOR BALL | Reine Libelle (Turn-Coordinator-Bezel, nur L/R und Kugel); Röhre als Kreisbogen (`TubeCurveRadius`), Kugel folgt dem Bogen; Ball-Teiler wie Turn Coordinator |
 | Altimeter | AltimeterGaugeControl | INDICATED ALTITUDE, KOHLSMAN SETTING HG | Drehbarer Druckeinstell-Knopf |
 | Tachometer | TachometerGaugeControl | GENERAL ENG RPM | SL/5/10-Markierungen |
 | Vertical Speed | VerticalSpeedGaugeControl | VERTICAL SPEED | — |

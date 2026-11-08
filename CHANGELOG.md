@@ -5,6 +5,10 @@ Versionierung nach [SemVer](https://semver.org/lang/de/) (`MAJOR.MINOR.PATCH`).
 
 ## [Unreleased]
 
+### Hinzugefügt
+- Neues Instrument `Compass`: Magnetkompass in doppelter Breite (600×300) in der Ansicht eines Schiffs-Kuppelkompasses (Rose als Trommel von schräg oben: vorn großes Zahlenband mit Strichskala, Zahlen steigen nach links an; gerundeter Übergang zur Oberseite, Oberseite als nach innen abfallender Kegel mit Skalenstrichen, Zahlen und Buchstaben), einem einzigen gelben Steuerstrich und Flüssigkeitsdämpfung (träges Nachlaufen, leichtes Überschwingen); Wert aus `WISKEY COMPASS INDICATION DEGREES`. Im Layout z. B. mit `colSpan` 6 bei `rowSpan` 3 einsetzen.
+- Neues Instrument `SlipIndicator`: reine Libelle (Kugel-Neigungsmesser) ohne Flugzeug-Symbol, ohne OFF-Klappe und ohne Referenzmarken, mit gebogener Röhre; nutzt `turnCoordinator.ballDivisor`. Im Setup unter „SlipIndicator“ wählbar.
+
 ## [1.0.1] - 2026-10-04
 
 ### Hinzugefügt
