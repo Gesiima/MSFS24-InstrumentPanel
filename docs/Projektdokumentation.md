@@ -91,6 +91,7 @@ Vier wählbare Modi (`WindowBackgroundBrushes.cs`): kein Hintergrund (Standard, 
 
 - **Rekursives Split-Modell**: Jede Fläche lässt sich beliebig oft in Zeilen/Spalten teilen (`SplitNode`-Baum), inkl. "+ Fläche hinzufügen" (übernimmt automatisch das Gewicht der Geschwister, kein Dominanz-Bug).
 - **"Breite an Zeilen koppeln"**: Automatische Breitenanpassung geteilter Flächen, damit alle Anzeigen quadratisch bleiben – Referenz ist die am wenigsten unterteilte Fläche (nicht die häufigste), Normalisierung nur beim Umschalten (kein Aufschaukel-Effekt bei wiederholtem Neuzeichnen).
+- **Breite/Höhe je Fläche**: Auswahl 0,5×–4× im Vergleich zu den Geschwistern (`BuildSizeControl`, setzt das `Weight` des Knotens, die Geschwister werden auf `NormalWeight` normiert). Nur Vielfache von 0,5, damit das Raster beim Speichern klein bleibt. Damit ist z. B. der Kompass in doppelter Breite (2×) im Setup einstellbar.
 - **Mehrfenster-Unterstützung**: Beliebig viele unabhängige Fenster, Live-Reload ohne Neustart.
 - **Versionierung**: siehe [CHANGELOG](../CHANGELOG.md) und README (Release-Skript).
 - **Debug-Werte-Reiter**: Alle SimConnect-Variablen live (1×/Sekunde), alphabetisch.

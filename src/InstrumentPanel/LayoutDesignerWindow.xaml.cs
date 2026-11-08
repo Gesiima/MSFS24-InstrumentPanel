@@ -1018,6 +1018,8 @@ namespace InstrumentPanel
                 // Zeilenanzahl - nur sinnvoll für eine Zeilen-Aufteilung unter einer Spalten-Aufteilung.
                 if (siblings != null && parentIsColumns && node.Direction == SplitDirection.Rows)
                     headerButtonsStack.Children.Add(BuildAutoWidthToggle(node, siblings));
+                if (siblings != null)
+                    headerButtonsStack.Children.Add(BuildSizeControl(node, siblings, parentIsColumns));
                 var mergeButton = new Button
                 {
                     Content = "⊟ Zusammenführen",
@@ -1157,6 +1159,7 @@ namespace InstrumentPanel
                     Margin = new Thickness(0, 0, 0, 4),
                     ToolTip = "Tatsächliche Endgröße: Anteil an der größten Anzeige im Fenster, sowie an der gesamten Fensterbreite/-höhe"
                 });
+                stack.Children.Add(BuildSizeControl(node, siblings, parentIsColumns));
                 var resetRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 2) };
                 resetRow.Children.Add(BuildResetToNormalButton(node, siblings));
                 stack.Children.Add(resetRow);
@@ -1247,6 +1250,104 @@ namespace InstrumentPanel
                 RedrawTree();
             };
             return toggle;
+        }
+
+        // Auswahlwerte für die Größe einer Fläche im Vergleich zu ihren Geschwistern. Bewusst nur
+        // "glatte" Faktoren (Vielfache von 0,5): so bleibt das Raster beim Speichern klein
+        // (siehe MaxGridUnits); ein von Hand/Kopplung entstandener anderer Wert wird zusätzlich angezeigt.
+        private static readonly double[] SizeFactorChoices = { 0.5, 1, 1.5, 2, 2.5, 3, 4 };
+
+        private static string FormatSizeFactor(double factor) =>
+            factor.ToString("0.##", CultureInfo.CurrentCulture) + "×";
+
+        /// <summary>
+        /// Bezugsgewicht für "1×": das häufigste Gewicht der ANDEREN Geschwister (gekoppelte
+        /// zählen nicht mit, siehe ComputeBaselineWeight). Hat die Fläche keine Geschwister, ist
+        /// sie selbst der Bezug.
+        /// </summary>
+        private static int SizeBaselineWeight(SplitNode node, List<SplitNode> siblings)
+        {
+            var others = siblings.Where(s => s != node).ToList();
+            return others.Count == 0 ? Math.Max(1, node.Weight) : ComputeBaselineWeight(others);
+        }
+
+        /// <summary>
+        /// Auswahl "Breite" (unter einer Spalten-Aufteilung) bzw. "Höhe" (unter einer Zeilen-
+        /// Aufteilung): wie groß diese Fläche im Vergleich zu ihren Geschwistern sein soll
+        /// (1× = gleich groß, 2× = doppelt so breit/hoch). So lässt sich z.B. eine Anzeige mit
+        /// doppelter Breite neben normalen anlegen, ohne die layout.json von Hand zu ändern.
+        /// Bei einer an die Zeilen gekoppelten Fläche wird die Breite automatisch berechnet
+        /// (dort nur ein Hinweis statt der Auswahl).
+        /// </summary>
+        private UIElement BuildSizeControl(SplitNode node, List<SplitNode> siblings, bool parentIsColumns)
+        {
+            var panel = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 6, 2) };
+            panel.Children.Add(new TextBlock
+            {
+                Text = parentIsColumns ? "Breite:" : "Höhe:",
+                Foreground = Brushes.LightGray,
+                FontSize = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 4, 0)
+            });
+
+            if (node.AutoWidth)
+            {
+                panel.Children.Add(new TextBlock
+                {
+                    Text = "automatisch (gekoppelt)",
+                    Foreground = Brushes.Gray,
+                    FontSize = 10,
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                return panel;
+            }
+
+            int baseline = SizeBaselineWeight(node, siblings);
+            double current = baseline > 0 ? (double)node.Weight / baseline : 1.0;
+
+            var choices = new List<double>(SizeFactorChoices);
+            if (!choices.Any(c => Math.Abs(c - current) < 0.005))
+            {
+                choices.Add(current);
+                choices.Sort();
+            }
+
+            var combo = new ComboBox
+            {
+                ItemsSource = choices.Select(FormatSizeFactor).ToList(),
+                SelectedIndex = choices.FindIndex(c => Math.Abs(c - current) < 0.005),
+                FontSize = 10,
+                MinWidth = 56,
+                ToolTip = "Größe dieser Fläche im Vergleich zu ihren Geschwistern: 1× = gleich groß, 2× = doppelt so " +
+                          (parentIsColumns ? "breit" : "hoch") + ". Die Vorschau zeigt das sofort."
+            };
+            combo.SelectionChanged += (s, e) =>
+            {
+                int index = combo.SelectedIndex;
+                if (index < 0 || index >= choices.Count) return;
+                double factor = choices[index];
+                if (Math.Abs(factor - current) < 0.005) return;
+
+                // Geschwister auf den gemeinsamen Maßstab bringen, dann diese Fläche relativ dazu setzen.
+                var others = siblings.Where(x => x != node).ToList();
+                if (others.Count > 0)
+                {
+                    int otherBaseline = ComputeBaselineWeight(others);
+                    if (otherBaseline > 0)
+                    {
+                        double scale = (double)NormalWeight / otherBaseline;
+                        foreach (var other in others)
+                            other.Weight = Math.Max(1, (int)Math.Round(other.Weight * scale));
+                    }
+                }
+                node.AutoWidth = false;
+                node.Weight = Math.Max(1, (int)Math.Round(NormalWeight * factor));
+                MarkDirty();
+                RedrawTree();
+            };
+            panel.Children.Add(combo);
+            return panel;
         }
 
         /// <summary>

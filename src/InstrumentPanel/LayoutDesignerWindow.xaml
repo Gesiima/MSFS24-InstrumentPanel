@@ -24,6 +24,9 @@
                         <TextBlock Foreground="#999999" FontSize="10" TextWrapping="Wrap" Margin="0,4,0,0">
                             <Run Text="Beispiel: " FontWeight="Bold" />
                             <Run Text="eine kleinere Anzeige neben normalen Spalten (z.B. 3 statt 2 gestapelte Anzeigen in einer Spalte) - erst diese eine Spalte ⬍ in 3 Zeilen teilen, dann '🔗 Breite an Zeilen koppeln' aktivieren, damit die Breite automatisch passt (und sich mit anpasst, falls du später die Zeilenanzahl änderst). Eine Aufteilung wieder aufheben: ⊟ Zusammenführen." />
+                            <LineBreak />
+                            <Run Text="Ungleiche Größen: " FontWeight="Bold" />
+                            <Run Text="Jede Fläche mit Nachbarn hat eine Auswahl 'Breite' (neben Spalten) bzw. 'Höhe' (neben Zeilen), z.B. 2× = doppelt so breit wie die Nachbarn - so entsteht etwa ein Instrument mit doppelter Breite." />
                         </TextBlock>
                     </StackPanel>
                 </Border>
